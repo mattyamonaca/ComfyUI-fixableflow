@@ -51,6 +51,27 @@ def pil_to_tensor(image):
     return torch.from_numpy(image_np)
 
 
+def rgba_to_binary(image):
+    """RGBA画像をバイナリ画像（線画）に変換
+    
+    ExtractLineArtNodeの出力（RGBA）を受け取り、
+    アルファチャンネルを使って線画を生成する
+    """
+    if image.mode != 'RGBA':
+        return image.convert('RGB')
+    
+    # アルファチャンネルを取得
+    alpha = np.array(image.split()[3])
+    
+    # アルファチャンネルから線画を生成
+    # アルファ値が高い（不透明）部分を黒、低い（透明）部分を白にする
+    binary = np.ones((alpha.shape[0], alpha.shape[1], 3), dtype=np.uint8) * 255
+    mask = alpha > 128  # 閾値を調整可能
+    binary[mask] = 0  # 線画部分を黒に
+    
+    return Image.fromarray(binary, mode='RGB')
+
+
 def find_contours(binary_image):
     """バイナリ画像から輪郭を検出する"""
     try:
@@ -322,7 +343,7 @@ class FillAreaNode:
         塗り領域均一化処理を実行
         
         Args:
-            binary_image: 輪郭画像（線画）のテンソル
+            binary_image: 輪郭画像（線画）のテンソル - ExtractLineArtNodeからのRGBA画像にも対応
             fill_image: 塗り画像のテンソル
             min_area_pixels: 小領域判定の閾値
             similarity_threshold: 色類似度の閾値
@@ -335,6 +356,10 @@ class FillAreaNode:
         # テンソルをPIL Imageに変換
         binary_pil = tensor_to_pil(binary_image)
         fill_pil = tensor_to_pil(fill_image)
+        
+        # ExtractLineArtNodeからのRGBA画像を処理
+        if binary_pil.mode == 'RGBA':
+            binary_pil = rgba_to_binary(binary_pil)
         
         # 処理実行
         result_image = process_fill_area(
@@ -411,7 +436,7 @@ class FillAreaAdvancedNode:
         高度な塗り領域均一化処理
         
         Args:
-            binary_image: 輪郭画像（線画）
+            binary_image: 輪郭画像（線画） - ExtractLineArtNodeからのRGBA画像にも対応
             fill_image: 塗り画像
             min_area_pixels: 小領域判定の閾値
             similarity_threshold: 色類似度の閾値
@@ -430,6 +455,10 @@ class FillAreaAdvancedNode:
         binary_pil = tensor_to_pil(binary_image)
         fill_pil = tensor_to_pil(fill_image)
         original_fill = fill_pil.copy()
+        
+        # ExtractLineArtNodeからのRGBA画像を処理
+        if binary_pil.mode == 'RGBA':
+            binary_pil = rgba_to_binary(binary_pil)
         
         # RGBに変換（処理用）
         binary_rgb = binary_pil.convert("RGB")
