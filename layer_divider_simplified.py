@@ -14,6 +14,7 @@ from .ldivider.ld_processor import get_base, get_normal_layer, get_composite_lay
 from pytoshop.enums import BlendMode
 from .extract_lineart_node import ExtractLineArtNode, ExtractLineArtAdvancedNode
 from .fill_area_node import FillAreaNode, FillAreaAdvancedNode
+from .fill_area_simple_node import FillAreaSimpleNode, FillAreaSimpleVisualizeNode
 from .split_area_node import SplitAreaNode, SplitAreaAdvancedNode
 from .fill_space_node import FillSpaceNode, FillSpaceAdvancedNode
 
@@ -337,6 +338,8 @@ NODE_CLASS_MAPPINGS = {
     "LayerDivider - Extract Line Art Advanced": ExtractLineArtAdvancedNode,
     "LayerDivider - Fill Area": FillAreaNode,
     "LayerDivider - Fill Area Advanced": FillAreaAdvancedNode,
+    "LayerDivider - Fill Area Simple": FillAreaSimpleNode,
+    "LayerDivider - Fill Area Simple Visualize": FillAreaSimpleVisualizeNode,
     "LayerDivider - Split Area": SplitAreaNode,
     "LayerDivider - Split Area Advanced": SplitAreaAdvancedNode,
     "LayerDivider - Fill Space": FillSpaceNode,
@@ -352,6 +355,8 @@ NODE_DISPLAY_NAME_MAPPINGS = {
     "LayerDivider - Extract Line Art Advanced": "Extract Line Art (Advanced)",
     "LayerDivider - Fill Area": "Fill Area",
     "LayerDivider - Fill Area Advanced": "Fill Area (Advanced)",
+    "LayerDivider - Fill Area Simple": "Fill Area Simple",
+    "LayerDivider - Fill Area Simple Visualize": "Fill Area Simple (Visualize)",
     "LayerDivider - Split Area": "Split Area",
     "LayerDivider - Split Area Advanced": "Split Area (Advanced)",
     "LayerDivider - Fill Space": "Fill Space",
