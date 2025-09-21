@@ -25,9 +25,17 @@ app.registerExtension({
             null,
             () => {
                 if (node.psdPath) {
-                    // Create download URL
-                    const filename = node.psdPath.split('/').pop();
-                    const downloadUrl = `/view?filename=${filename}&subfolder=&type=output&folder_type=ComfyUI-LayerDivider/output`;
+                    // Extract just the filename from the full path
+                    const filename = node.psdPath.split('/').pop() || node.psdPath.split('\\').pop();
+                    console.log("Downloading file:", filename, "from path:", node.psdPath);
+                    
+                    // ComfyUI standard /view endpoint format
+                    // type=output means the file is in the output directory
+                    const params = new URLSearchParams({
+                        filename: filename,
+                        type: 'output'
+                    });
+                    const downloadUrl = `/view?${params.toString()}`;
                     
                     // Create a temporary link and click it
                     const link = document.createElement('a');
@@ -38,10 +46,21 @@ app.registerExtension({
                     link.click();
                     document.body.removeChild(link);
                     
-                    // Show success message
-                    app.ui.dialog.show(`Downloading: ${filename}`);
+                    // Show success message with shortened timeout
+                    if (app.ui.dialog) {
+                        app.ui.dialog.show(`Downloading: ${filename}`);
+                        setTimeout(() => {
+                            if (app.ui.dialog && app.ui.dialog.close) {
+                                app.ui.dialog.close();
+                            }
+                        }, 2000);
+                    }
+                    console.log("Download initiated for:", filename);
                 } else {
-                    app.ui.dialog.show("No PSD file available. Please run the workflow first.");
+                    console.warn("No PSD file path available");
+                    if (app.ui.dialog) {
+                        app.ui.dialog.show("No PSD file available. Please run the workflow first.");
+                    }
                 }
             },
             { 
@@ -56,17 +75,50 @@ app.registerExtension({
         // Override the onExecuted method to capture the PSD path
         const originalOnExecuted = node.onExecuted;
         node.onExecuted = function(output) {
+            // Debug logging
+            console.log("RGBLineArtDividerFast onExecuted called with:", output);
+            
             // Call original handler if it exists
             if (originalOnExecuted) {
                 originalOnExecuted.call(this, output);
             }
             
-            // Extract PSD path from output (4th element in the output array)
-            if (output && output.psd_path && output.psd_path[0]) {
-                node.psdPath = output.psd_path[0];
+            // Try different ways to extract the PSD path
+            let psdPath = null;
+            
+            // Method 1: Direct array access (ComfyUI typically returns arrays)
+            if (output && Array.isArray(output)) {
+                // The 4th element (index 3) should be the psd_path
+                if (output.length > 3 && output[3]) {
+                    psdPath = Array.isArray(output[3]) ? output[3][0] : output[3];
+                    console.log("Method 1 - Found PSD path from array:", psdPath);
+                }
+            }
+            
+            // Method 2: Named property access
+            if (!psdPath && output && output.psd_path) {
+                psdPath = Array.isArray(output.psd_path) ? output.psd_path[0] : output.psd_path;
+                console.log("Method 2 - Found PSD path from property:", psdPath);
+            }
+            
+            // Method 3: Check if output has a nested structure
+            if (!psdPath && output && output.output) {
+                if (Array.isArray(output.output) && output.output.length > 3) {
+                    psdPath = Array.isArray(output.output[3]) ? output.output[3][0] : output.output[3];
+                    console.log("Method 3 - Found PSD path from nested structure:", psdPath);
+                }
+            }
+            
+            // Update button if we found a path
+            if (psdPath) {
+                node.psdPath = psdPath;
                 downloadWidget.disabled = false;
                 downloadWidget.bgColor = "#4CAF50";
-                downloadWidget.name = `Download PSD (${node.psdPath.split('/').pop()})`;
+                const fileName = psdPath.split('/').pop() || psdPath.split('\\').pop() || 'output.psd';
+                downloadWidget.name = `Download: ${fileName}`;
+                console.log("PSD download enabled for:", psdPath);
+            } else {
+                console.warn("Could not find PSD path in output");
             }
         };
         

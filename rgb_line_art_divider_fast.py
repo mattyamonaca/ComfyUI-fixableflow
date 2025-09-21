@@ -20,12 +20,17 @@ import random
 import string
 
 # パス設定
-comfy_path = os.path.dirname(folder_paths.__file__)
-layer_divider_path = f'{comfy_path}/custom_nodes/ComfyUI-LayerDivider'
-output_dir = f"{layer_divider_path}/output"
-
-if not os.path.exists(f'{output_dir}'):
-    os.makedirs(f'{output_dir}')
+# ComfyUIの標準出力ディレクトリを使用
+try:
+    output_dir = folder_paths.get_output_directory()
+except:
+    # フォールバック: カスタムノードディレクトリ内のoutputを使用
+    comfy_path = os.path.dirname(folder_paths.__file__)
+    layer_divider_path = f'{comfy_path}/custom_nodes/ComfyUI-fixableflow'
+    output_dir = f"{layer_divider_path}/output"
+    
+    if not os.path.exists(output_dir):
+        os.makedirs(output_dir)
 
 
 def randomname(n):
@@ -388,7 +393,8 @@ def save_psd_fast(base_color_cv, line_art_cv, color_layers, layer_names,
     
     # ファイル名生成（ld_utils.pyと同じ形式）
     name = randomname(10)
-    filename = f"{output_dir}/output_rgb_fast_{layer_mode}_{name}.psd"
+    filename_only = f"output_rgb_fast_{layer_mode}_{name}.psd"
+    filename = os.path.join(output_dir, filename_only)
     
     with open(filename, 'wb') as fd:
         psd.write(fd)
