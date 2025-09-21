@@ -1,6 +1,7 @@
 """
 RGB Line Art Layer Divider - FAST VERSION
 高速化版：同じRGB値でグループ化してから統合
+ld_utils.pyの実装に準拠した安定版
 """
 
 from PIL import Image
@@ -8,14 +9,15 @@ import numpy as np
 import torch
 import os
 import folder_paths
-from .ldivider.ld_convertor import pil2cv
+from .ldivider.ld_convertor import pil2cv, df2rgba
 from pytoshop.enums import BlendMode
 import cv2
 import pytoshop
 from pytoshop.core import PsdFile
-from pytoshop.user import nested_layers
+from pytoshop import layers
 from pytoshop import enums
-from datetime import datetime
+import random
+import string
 
 # パス設定
 comfy_path = os.path.dirname(folder_paths.__file__)
@@ -24,6 +26,12 @@ output_dir = f"{layer_divider_path}/output"
 
 if not os.path.exists(f'{output_dir}'):
     os.makedirs(f'{output_dir}')
+
+
+def randomname(n):
+    """ld_utils.pyと同じランダムファイル名生成"""
+    randlst = [random.choice(string.ascii_letters + string.digits) for i in range(n)]
+    return ''.join(randlst)
 
 
 def HWC3(x):
@@ -53,6 +61,41 @@ def to_comfy_img(np_img):
     out_imgs = np.stack(out_imgs)
     out_imgs = torch.from_numpy(out_imgs.astype(np.float32) / 255.)
     return out_imgs
+
+
+def add_psd(psd, img, name, mode):
+    """
+    ld_utils.pyのadd_psd関数と完全に同じ実装
+    """
+    # 確実にuint8型、4チャンネルに変換
+    if img.shape[2] == 3:
+        # BGRにアルファチャンネルを追加
+        alpha = np.ones((img.shape[0], img.shape[1], 1), dtype=np.uint8) * 255
+        img = np.concatenate([img, alpha], axis=2)
+    
+    img = np.clip(img, 0, 255).astype(np.uint8)
+    
+    # BGRAからRGBAに変換（OpenCVのBGR順をRGB順に）
+    img_rgba = np.zeros_like(img, dtype=np.uint8)
+    img_rgba[:, :, 0] = img[:, :, 2]  # B -> R
+    img_rgba[:, :, 1] = img[:, :, 1]  # G -> G  
+    img_rgba[:, :, 2] = img[:, :, 0]  # R -> B
+    img_rgba[:, :, 3] = img[:, :, 3]  # A -> A
+    
+    # ld_utils.pyと同じ形式でチャンネルデータを作成
+    layer_1 = layers.ChannelImageData(image=img_rgba[:, :, 3], compression=1)
+    layer0 = layers.ChannelImageData(image=img_rgba[:, :, 0], compression=1)
+    layer1 = layers.ChannelImageData(image=img_rgba[:, :, 1], compression=1)
+    layer2 = layers.ChannelImageData(image=img_rgba[:, :, 2], compression=1)
+
+    new_layer = layers.LayerRecord(channels={-1: layer_1, 0: layer0, 1: layer1, 2: layer2},
+                                   top=0, bottom=img.shape[0], left=0, right=img.shape[1],
+                                   blend_mode=mode,
+                                   name=name,
+                                   opacity=255,
+                                   )
+    psd.layer_and_mask_info.layer_info.layer_records.append(new_layer)
+    return psd
 
 
 def extract_color_regions_fast(base_image_cv, tolerance=10, max_colors=50):
@@ -240,7 +283,7 @@ def merge_small_regions_fast(color_regions, min_region_size=100):
 
 def create_region_layers(base_image_cv, color_regions):
     """
-    色領域ごとにレイヤーを作成
+    色領域ごとにレイヤーを作成（ld_utils.pyの形式に準拠）
     """
     layers = []
     names = []
@@ -280,195 +323,74 @@ def create_region_layers(base_image_cv, color_regions):
     return layers, names
 
 
-def save_psd_with_nested_layers(base_image_cv, line_art_cv, color_layers, layer_names, 
-                                output_dir, blend_mode=BlendMode.multiply, filename_prefix="rgb_divided"):
+def save_psd_fast(base_image_cv, line_art_cv, color_layers, layer_names, 
+                  output_dir, line_blend_mode, layer_mode="normal"):
     """
-    nested_layersを使用してPSDファイルを保存
+    ld_utils.pyのsave_psd関数と同じ構造でPSDを保存
+    
+    Args:
+        base_image_cv: ベース画像（BGRA形式）
+        line_art_cv: 線画（BGRA形式）
+        color_layers: 色領域レイヤーのリスト
+        layer_names: レイヤー名のリスト
+        output_dir: 出力ディレクトリ
+        line_blend_mode: 線画のブレンドモード
+        layer_mode: レイヤーモード（"normal" or "composite"）
+    
+    Returns:
+        filename: 保存したファイル名
     """
-    # ファイル名生成
-    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    filename = os.path.join(output_dir, f"{filename_prefix}_{timestamp}.psd")
-    
-    height, width = base_image_cv.shape[:2]
-    layers_list = []
-    
     # 入力画像のデータ型と範囲を確実に修正
     base_image_cv = np.clip(base_image_cv, 0, 255).astype(np.uint8)
     line_art_cv = np.clip(line_art_cv, 0, 255).astype(np.uint8)
     
-    # 背景レイヤーを追加
-    # BGRからRGBに変換し、各チャンネルを2次元配列として分離
-    if base_image_cv.shape[2] >= 3:
-        # 各チャンネルを2次元配列として取得（copyで独立したメモリ領域を確保）
-        r_channel = base_image_cv[:, :, 2].copy().astype(np.uint8)
-        g_channel = base_image_cv[:, :, 1].copy().astype(np.uint8)
-        b_channel = base_image_cv[:, :, 0].copy().astype(np.uint8)
-        
-        # リスト形式でチャンネルを作成
-        channels = [r_channel, g_channel, b_channel]
-        
-        if base_image_cv.shape[2] == 4:
-            alpha_channel = base_image_cv[:, :, 3].copy().astype(np.uint8)
-        else:
-            alpha_channel = np.full((height, width), 255, dtype=np.uint8)
-        channels.append(alpha_channel)
-    else:
-        # グレースケールの場合
-        gray_channel = base_image_cv[:, :, 0].copy().astype(np.uint8)
-        # グレースケールでもRGBAチャンネルが必要
-        channels = [gray_channel, gray_channel, gray_channel, 
-                   np.full((height, width), 255, dtype=np.uint8)]
+    height, width = base_image_cv.shape[:2]
     
-    bg_layer = nested_layers.Image(
-        name="Background",
-        visible=True,
-        opacity=255,
-        group_id=0,
-        blend_mode=enums.BlendMode.normal,
-        top=0,
-        left=0,
-        channels=channels,
-        metadata=None,
-        layer_color=0,
-        color_mode=None
-    )
-    layers_list.append(bg_layer)
+    # PSDファイルを作成（ld_utils.pyと同じ初期化）
+    psd = pytoshop.core.PsdFile(num_channels=3, height=height, width=width)
+    
+    # レイヤーを追加する配列を準備（ld_utils.pyのlayers構造を模倣）
+    # layers[0]: ベースレイヤー群
+    # layers[1]: 色領域レイヤー群
+    # layers[2]: 線画レイヤー群
+    
+    # 背景レイヤーを追加
+    psd = add_psd(psd, base_image_cv, "Background", enums.BlendMode.normal)
     
     # 色領域レイヤーを追加
-    for layer_data, name in zip(color_layers, layer_names):
-        # データを確実にuint8に変換
+    for idx, (layer_data, base_name) in enumerate(zip(color_layers, layer_names)):
         layer_data = np.clip(layer_data, 0, 255).astype(np.uint8)
-        
-        # 各チャンネルを2次元配列として取得
-        if layer_data.shape[2] >= 3:
-            r_channel = layer_data[:, :, 2].copy().astype(np.uint8)  # BGRのBチャンネル→R
-            g_channel = layer_data[:, :, 1].copy().astype(np.uint8)  # BGRのGチャンネル→G
-            b_channel = layer_data[:, :, 0].copy().astype(np.uint8)  # BGRのRチャンネル→B
-            
-            channels = [r_channel, g_channel, b_channel]
-            
-            if layer_data.shape[2] == 4:
-                alpha_channel = layer_data[:, :, 3].copy().astype(np.uint8)
-            else:
-                alpha_channel = np.full((height, width), 255, dtype=np.uint8)
-            channels.append(alpha_channel)
-        else:
-            # グレースケールの場合
-            gray_channel = layer_data[:, :, 0].copy().astype(np.uint8)
-            # グレースケールでもRGBAチャンネルが必要
-            channels = [gray_channel, gray_channel, gray_channel, 
-                       np.full((height, width), 255, dtype=np.uint8)]
-        
-        layer = nested_layers.Image(
-            name=name,
-            visible=True,
-            opacity=255,
-            group_id=0,
-            blend_mode=enums.BlendMode.normal,
-            top=0,
-            left=0,
-            channels=channels,
-            metadata=None,
-            layer_color=0,
-            color_mode=None
-        )
-        layers_list.append(layer)
+        # ld_utils.pyの命名規則に従う
+        layer_name = f"{base_name}_{idx}" if layer_mode == "normal" else base_name
+        psd = add_psd(psd, layer_data, layer_name, enums.BlendMode.normal)
     
     # 線画レイヤーを最上位に追加
-    # 線画データのクリッピングとデータ型変換
-    line_art_cv = np.clip(line_art_cv, 0, 255).astype(np.uint8)
-    
-    if line_art_cv.shape[2] >= 3:
-        # 各チャンネルを2次元配列として取得
-        r_channel = line_art_cv[:, :, 2].copy().astype(np.uint8)  # BGRのBチャンネル→R
-        g_channel = line_art_cv[:, :, 1].copy().astype(np.uint8)  # BGRのGチャンネル→G  
-        b_channel = line_art_cv[:, :, 0].copy().astype(np.uint8)  # BGRのRチャンネル→B
+    # 線画が黒い場合の特別処理
+    if line_art_cv.shape[2] == 4:
+        alpha = line_art_cv[:, :, 3]
+        # RGBチャンネルの最大値をチェック
+        rgb_max = np.max(line_art_cv[:, :, :3])
         
-        # チャンネルデータが全て0の場合の対策（線画が黒のみの場合）
-        # アルファチャンネルの情報から線画を復元
-        if line_art_cv.shape[2] == 4:
-            alpha_channel = line_art_cv[:, :, 3].copy().astype(np.uint8)
-            # アルファから線画の黒色部分を生成（アルファが高い部分を黒に）
-            line_intensity = 255 - alpha_channel  # アルファを反転して線画の濃度に
-            r_channel = line_intensity.copy()
-            g_channel = line_intensity.copy()
-            b_channel = line_intensity.copy()
+        if rgb_max < 10:  # ほぼ黒の線画
+            # アルファチャンネルから線画を生成
+            line_intensity = 255 - alpha  # アルファの反転
+            line_art_fixed = np.zeros_like(line_art_cv)
+            line_art_fixed[:, :, 0] = line_intensity
+            line_art_fixed[:, :, 1] = line_intensity
+            line_art_fixed[:, :, 2] = line_intensity
+            line_art_fixed[:, :, 3] = alpha
+            psd = add_psd(psd, line_art_fixed, "Line Art", line_blend_mode)
         else:
-            alpha_channel = np.full((height, width), 255, dtype=np.uint8)
-        
-        channels = [r_channel, g_channel, b_channel, alpha_channel]
+            psd = add_psd(psd, line_art_cv, "Line Art", line_blend_mode)
     else:
-        # グレースケールの場合
-        gray_channel = line_art_cv[:, :, 0].copy().astype(np.uint8)
-        # グレースケールでもRGBAチャンネルが必要
-        channels = [gray_channel, gray_channel, gray_channel, 
-                   np.full((height, width), 255, dtype=np.uint8)]
+        psd = add_psd(psd, line_art_cv, "Line Art", line_blend_mode)
     
-    line_layer = nested_layers.Image(
-        name="Line Art",
-        visible=True,
-        opacity=255,
-        group_id=0,
-        blend_mode=blend_mode,
-        top=0,
-        left=0,
-        channels=channels,
-        metadata=None,
-        layer_color=0,
-        color_mode=None
-    )
-    layers_list.append(line_layer)
+    # ファイル名生成（ld_utils.pyと同じ形式）
+    name = randomname(10)
+    filename = f"{output_dir}/output_rgb_fast_{layer_mode}_{name}.psd"
     
-    # PSDファイルとして保存
-    print(f"[Fast] Saving PSD with {len(layers_list)} layers...")
-    
-    # デバッグ: 各レイヤーのチャンネルデータを確認
-    for i, layer in enumerate(layers_list):
-        print(f"[DEBUG] Layer {i} ({layer.name}):")
-        print(f"  layer type: {type(layer)}")
-        print(f"  hasattr channels: {hasattr(layer, 'channels')}")
-        if hasattr(layer, 'channels'):
-            print(f"  channels type: {type(layer.channels)}")
-            if layer.channels:
-                if isinstance(layer.channels, dict):
-                    print("  channels is dict")
-                    for key, value in layer.channels.items():
-                        if isinstance(value, np.ndarray):
-                            print(f"    Channel {key}: shape={value.shape}, dtype={value.dtype}, "
-                                  f"min={np.min(value)}, max={np.max(value)}")
-                        else:
-                            print(f"    Channel {key}: type={type(value)}")
-                elif isinstance(layer.channels, (list, tuple)):
-                    print(f"  channels is list/tuple with {len(layer.channels)} items")
-                    for j, channel in enumerate(layer.channels):
-                        if isinstance(channel, np.ndarray):
-                            print(f"    Channel {j}: shape={channel.shape}, dtype={channel.dtype}, "
-                                  f"min={np.min(channel)}, max={np.max(channel)}")
-                        else:
-                            print(f"    Channel {j}: type={type(channel)}")
-                else:
-                    print(f"  Unexpected channels format")
-                    # enumerate経由でアクセスしてみる
-                    print("  Trying enumerate:")
-                    for idx, ch in enumerate(layer.channels):
-                        print(f"    Index {idx}: type={type(ch)}")
-                        break  # 最初の一つだけ確認
-    
-    try:
-        # PSDファイル作成時にデプス（ビット深度）を明示的に8ビットに設定
-        output = nested_layers.nested_layers_to_psd(
-            layers_list, 
-            color_mode=3,  # RGB mode
-            depth=8  # 8 bits per channel
-        )
-        with open(filename, 'wb') as f:
-            output.write(f)
-        print(f"[Fast] PSD saved successfully: {filename}")
-    except Exception as e:
-        print(f"[Fast] ERROR saving PSD: {str(e)}")
-        import traceback
-        traceback.print_exc()
-        raise
+    with open(filename, 'wb') as fd:
+        psd.write(fd)
     
     return filename
 
@@ -476,6 +398,7 @@ def save_psd_with_nested_layers(base_image_cv, line_art_cv, color_layers, layer_
 class RGBLineArtDividerFast:
     """
     高速版：RGB線画と下塗り画像から領域分割PSDを生成するノード
+    ld_utils.pyの実装に準拠
     """
     
     def __init__(self):
@@ -565,7 +488,7 @@ class RGBLineArtDividerFast:
             print("[RGBLineArtDividerFast] Creating layers...")
             color_layers, layer_names = create_region_layers(base_color_cv, color_regions)
             
-            # BlendModeの設定
+            # BlendModeの設定（ld_utils.pyと同じ形式）
             blend_mode_map = {
                 "multiply": enums.BlendMode.multiply,
                 "normal": enums.BlendMode.normal,
@@ -573,16 +496,16 @@ class RGBLineArtDividerFast:
                 "overlay": enums.BlendMode.overlay
             }
             
-            # PSDファイルを保存
+            # PSDファイルを保存（ld_utils.pyの方式を完全に踏襲）
             print("[RGBLineArtDividerFast] Saving PSD file...")
-            filename = save_psd_with_nested_layers(
-                base_color_cv,
+            filename = save_psd_fast(
+                base_image_cv,
                 line_art_cv,
                 color_layers,
                 layer_names,
                 output_dir,
                 blend_mode_map[line_blend_mode],
-                "rgb_divided_fast"
+                layer_mode="normal"  # ld_utils.pyのnormalモードに対応
             )
             
             print(f"[RGBLineArtDividerFast] PSD file saved: {filename}")
