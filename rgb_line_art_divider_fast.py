@@ -539,12 +539,15 @@ class RGBLineArtDividerFast:
             print("[RGBLineArtDividerFast] Execution completed successfully!")
             print(f"[RGBLineArtDividerFast] Returning PSD path: {filename}")
             
+            # ファイル名だけを取得
+            filename_only = os.path.basename(filename)
+            
             # 出力
             return (
                 to_comfy_img(composite),
                 to_comfy_img(base_color_cv),
                 len(color_regions),
-                filename
+                filename_only  # フルパスではなくファイル名のみを返す
             )
         
         except Exception as e:
