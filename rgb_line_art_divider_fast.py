@@ -323,13 +323,13 @@ def create_region_layers(base_image_cv, color_regions):
     return layers, names
 
 
-def save_psd_fast(base_image_cv, line_art_cv, color_layers, layer_names, 
+def save_psd_fast(base_color_cv, line_art_cv, color_layers, layer_names, 
                   output_dir, line_blend_mode, layer_mode="normal"):
     """
     ld_utils.pyのsave_psd関数と同じ構造でPSDを保存
     
     Args:
-        base_image_cv: ベース画像（BGRA形式）
+        base_color_cv: ベース画像（BGRA形式）
         line_art_cv: 線画（BGRA形式）
         color_layers: 色領域レイヤーのリスト
         layer_names: レイヤー名のリスト
@@ -341,10 +341,10 @@ def save_psd_fast(base_image_cv, line_art_cv, color_layers, layer_names,
         filename: 保存したファイル名
     """
     # 入力画像のデータ型と範囲を確実に修正
-    base_image_cv = np.clip(base_image_cv, 0, 255).astype(np.uint8)
+    base_color_cv = np.clip(base_color_cv, 0, 255).astype(np.uint8)
     line_art_cv = np.clip(line_art_cv, 0, 255).astype(np.uint8)
     
-    height, width = base_image_cv.shape[:2]
+    height, width = base_color_cv.shape[:2]
     
     # PSDファイルを作成（ld_utils.pyと同じ初期化）
     psd = pytoshop.core.PsdFile(num_channels=3, height=height, width=width)
@@ -355,7 +355,7 @@ def save_psd_fast(base_image_cv, line_art_cv, color_layers, layer_names,
     # layers[2]: 線画レイヤー群
     
     # 背景レイヤーを追加
-    psd = add_psd(psd, base_image_cv, "Background", enums.BlendMode.normal)
+    psd = add_psd(psd, base_color_cv, "Background", enums.BlendMode.normal)
     
     # 色領域レイヤーを追加
     for idx, (layer_data, base_name) in enumerate(zip(color_layers, layer_names)):
@@ -499,7 +499,7 @@ class RGBLineArtDividerFast:
             # PSDファイルを保存（ld_utils.pyの方式を完全に踏襲）
             print("[RGBLineArtDividerFast] Saving PSD file...")
             filename = save_psd_fast(
-                base_image_cv,
+                base_color_cv,
                 line_art_cv,
                 color_layers,
                 layer_names,
