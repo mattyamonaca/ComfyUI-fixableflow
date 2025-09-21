@@ -519,6 +519,16 @@ class RGBLineArtDividerFast:
             print(f"[RGBLineArtDividerFast] PSD file saved: {filename}")
             print(f"[RGBLineArtDividerFast] Created {len(color_regions)} color region layers")
             
+            # ログファイルに最新のPSDパスを保存（JavaScript側で読み取るため）
+            log_file = os.path.join(output_dir, "fixableflow_savepath.log")
+            try:
+                with open(log_file, 'w') as f:
+                    # ファイル名のみを保存（フルパスではなく）
+                    f.write(os.path.basename(filename))
+                print(f"[RGBLineArtDividerFast] Log file updated: {log_file}")
+            except Exception as e:
+                print(f"[RGBLineArtDividerFast] Warning: Could not write log file: {e}")
+            
             # コンポジット画像を作成（プレビュー用）
             print("[RGBLineArtDividerFast] Creating composite image...")
             composite = base_color_cv.copy()

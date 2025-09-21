@@ -1,10 +1,9 @@
 /**
  * RGBLineArtDividerFast Web Extension
- * Fallback download method - always download the latest PSD file
+ * Log file based download system
  */
 
 import { app } from "../../scripts/app.js";
-import { api } from "../../scripts/api.js";
 
 app.registerExtension({
     name: "ComfyUI-fixableflow.RGBLineArtDividerFast",
@@ -12,76 +11,72 @@ app.registerExtension({
     async nodeCreated(node) {
         // Only apply to RGBLineArtDividerFast nodes  
         if (node.comfyClass === "RGBLineArtDividerFast") {
-            console.log("RGBLineArtDividerFast: Setting up download button");
+            console.log("[RGBDivider] Setting up download button");
             
             // Store the latest generated filename
             let latestPsdFilename = null;
-            let executionCount = 0;
+            let checkInterval = null;
             
             // Add download button
             const downloadButton = node.addWidget(
                 "button",
                 "Download PSD",
-                "⬇ Download Latest PSD",
+                "⬇ Download PSD (Run workflow first)",
                 async () => {
-                    // First try to use stored filename
+                    // First check if we have a cached filename
                     if (latestPsdFilename) {
-                        console.log("Downloading stored file:", latestPsdFilename);
-                        downloadFile(latestPsdFilename);
+                        downloadPsd(latestPsdFilename);
                         return;
                     }
                     
-                    // Fallback: Try to get the latest file from the server
+                    // Try to read the log file
                     try {
-                        console.log("Fetching latest PSD from server...");
-                        
-                        // Call API to get list of files in output directory
-                        const response = await fetch('/api/output_files');
-                        if (response.ok) {
-                            const files = await response.json();
-                            
-                            // Filter for PSD files matching our pattern
-                            const psdFiles = files.filter(f => 
-                                f.includes('output_rgb_fast_normal_') && f.endsWith('.psd')
-                            );
-                            
-                            if (psdFiles.length > 0) {
-                                // Get the most recent file (assuming they're sorted or we take the last one)
-                                const latestFile = psdFiles[psdFiles.length - 1];
-                                console.log("Found latest PSD:", latestFile);
-                                downloadFile(latestFile);
-                                latestPsdFilename = latestFile;
-                                updateButton(latestFile);
-                            } else {
-                                alert("No PSD files found. Please run the workflow first.");
-                            }
+                        const logFilename = await fetchLatestPsdFromLog();
+                        if (logFilename) {
+                            latestPsdFilename = logFilename;
+                            updateButton(logFilename);
+                            downloadPsd(logFilename);
+                        } else {
+                            // Manual fallback
+                            promptForManualInput();
                         }
                     } catch (error) {
-                        console.error("Error fetching files:", error);
-                        
-                        // Ultimate fallback: Prompt user
-                        const filename = prompt(
-                            "Could not auto-detect PSD file.\n" +
-                            "Please enter the filename from the server console:\n" +
-                            "(e.g., output_rgb_fast_normal_G3HTgU8UPn.psd)"
-                        );
-                        
-                        if (filename && filename.includes('.psd')) {
-                            downloadFile(filename);
-                            latestPsdFilename = filename;
-                            updateButton(filename);
-                        }
+                        console.error("[RGBDivider] Error reading log:", error);
+                        promptForManualInput();
                     }
                 }
             );
             
-            // Helper function to download file
-            function downloadFile(filename) {
+            // Function to fetch latest PSD filename from log
+            async function fetchLatestPsdFromLog() {
+                try {
+                    // Try to fetch the log file
+                    const response = await fetch('/view?filename=fixableflow_savepath.log&type=output&t=' + Date.now());
+                    
+                    if (response.ok) {
+                        const text = await response.text();
+                        const filename = text.trim();
+                        
+                        if (filename && filename.includes('.psd')) {
+                            console.log("[RGBDivider] Found filename in log:", filename);
+                            return filename;
+                        }
+                    }
+                } catch (error) {
+                    console.error("[RGBDivider] Failed to read log file:", error);
+                }
+                return null;
+            }
+            
+            // Function to download PSD
+            function downloadPsd(filename) {
+                console.log("[RGBDivider] Downloading:", filename);
+                
                 // Ensure we have just the filename, not the full path
                 const cleanFilename = filename.split('/').pop() || filename.split('\\').pop() || filename;
                 
                 const downloadUrl = `/view?filename=${encodeURIComponent(cleanFilename)}&type=output`;
-                console.log("Downloading from:", downloadUrl);
+                console.log("[RGBDivider] Download URL:", downloadUrl);
                 
                 const link = document.createElement('a');
                 link.href = downloadUrl;
@@ -91,7 +86,23 @@ app.registerExtension({
                 link.click();
                 document.body.removeChild(link);
                 
-                console.log("Download initiated for:", cleanFilename);
+                console.log("[RGBDivider] Download initiated");
+            }
+            
+            // Function for manual input
+            function promptForManualInput() {
+                const filename = prompt(
+                    "ログファイルが見つかりません。\n" +
+                    "サーバーコンソールからファイル名をコピーしてください。\n" +
+                    "例: output_rgb_fast_normal_G3HTgU8UPn.psd"
+                );
+                
+                if (filename && filename.includes('.psd')) {
+                    const cleanFilename = filename.split('/').pop() || filename.split('\\').pop() || filename;
+                    latestPsdFilename = cleanFilename;
+                    updateButton(cleanFilename);
+                    downloadPsd(cleanFilename);
+                }
             }
             
             // Helper function to update button
@@ -100,96 +111,87 @@ app.registerExtension({
                 downloadButton.name = `⬇ Download: ${cleanFilename}`;
                 downloadButton.color = "#4CAF50";
                 downloadButton.bgcolor = "#2E7D32";
+                console.log("[RGBDivider] Button updated:", cleanFilename);
             }
             
             // Initial button style
-            downloadButton.color = "#3B82F6";
-            downloadButton.bgcolor = "#1E40AF";
+            downloadButton.color = "#888888";
+            downloadButton.bgcolor = "#333333";
             
-            // Monitor console logs for PSD filename
-            const originalLog = console.log;
-            console.log = function() {
-                const message = Array.from(arguments).join(' ');
-                
-                // Check for our PSD save message
-                if (message.includes('[RGBLineArtDividerFast]') && message.includes('PSD file saved:')) {
-                    // Extract filename using a more flexible regex
-                    const match = message.match(/output_rgb_fast_normal_[A-Za-z0-9]+\.psd/);
-                    if (match) {
-                        const filename = match[0];
-                        console.warn("📁 Captured PSD filename:", filename);
-                        latestPsdFilename = filename;
-                        updateButton(filename);
-                        executionCount++;
-                    }
+            // Start periodic check for log file updates
+            function startLogMonitoring() {
+                if (checkInterval) {
+                    clearInterval(checkInterval);
                 }
                 
-                // Call original console.log
-                originalLog.apply(console, arguments);
-            };
+                // Check log file every 2 seconds after workflow execution
+                checkInterval = setInterval(async () => {
+                    const filename = await fetchLatestPsdFromLog();
+                    if (filename && filename !== latestPsdFilename) {
+                        console.log("[RGBDivider] New PSD detected:", filename);
+                        latestPsdFilename = filename;
+                        updateButton(filename);
+                        
+                        // Stop checking once we found a file
+                        clearInterval(checkInterval);
+                        checkInterval = null;
+                    }
+                }, 2000);
+                
+                // Stop checking after 10 seconds to avoid unnecessary requests
+                setTimeout(() => {
+                    if (checkInterval) {
+                        clearInterval(checkInterval);
+                        checkInterval = null;
+                        console.log("[RGBDivider] Stopped log monitoring");
+                    }
+                }, 10000);
+            }
             
-            // Also try to monitor execution if it works
+            // Monitor node execution to trigger log checking
             const originalOnExecuted = node.onExecuted;
             node.onExecuted = function(output) {
-                console.log("Node executed, output type:", typeof output);
+                console.log("[RGBDivider] Node executed");
                 
                 if (originalOnExecuted) {
                     originalOnExecuted.apply(this, arguments);
                 }
                 
-                // Increment counter to track executions
-                executionCount++;
-                downloadButton.name = `⬇ Download Latest PSD (Run #${executionCount})`;
+                // Start monitoring log file after execution
+                console.log("[RGBDivider] Starting log file monitoring...");
+                startLogMonitoring();
             };
             
-            console.log("RGBLineArtDividerFast: Download button ready");
+            // Also check log immediately on button creation in case file already exists
+            (async () => {
+                const filename = await fetchLatestPsdFromLog();
+                if (filename) {
+                    latestPsdFilename = filename;
+                    updateButton(filename);
+                    console.log("[RGBDivider] Found existing PSD:", filename);
+                }
+            })();
+            
+            console.log("[RGBDivider] Download button ready");
         }
     }
 });
 
-// Try to intercept WebSocket messages as backup
-if (api.socket) {
-    const ws = api.socket;
-    const originalOnMessage = ws.onmessage;
-    
-    ws.onmessage = function(event) {
-        try {
-            const msg = JSON.parse(event.data);
-            
-            // Check for console output containing PSD filename
-            if (msg.type === 'status' && msg.data && msg.data.message) {
-                const message = msg.data.message;
-                if (message.includes('output_rgb_fast_normal_') && message.includes('.psd')) {
-                    const match = message.match(/output_rgb_fast_normal_[A-Za-z0-9]+\.psd/);
-                    if (match) {
-                        console.log("📁 Found PSD in WebSocket status:", match[0]);
-                        
-                        // Update any RGBLineArtDividerFast nodes
-                        if (app.graph && app.graph.nodes) {
-                            app.graph.nodes.forEach(node => {
-                                if (node.comfyClass === 'RGBLineArtDividerFast') {
-                                    // Trigger update if possible
-                                    const widgets = node.widgets || [];
-                                    const downloadWidget = widgets.find(w => w.type === 'button' && w.name.includes('Download'));
-                                    if (downloadWidget) {
-                                        downloadWidget.name = `⬇ Download: ${match[0]}`;
-                                        downloadWidget.color = "#4CAF50";
-                                        downloadWidget.bgcolor = "#2E7D32";
-                                    }
-                                }
-                            });
-                        }
-                    }
-                }
-            }
-        } catch (e) {
-            // Ignore parse errors
+// Global helper function for debugging
+window.checkPsdLog = async function() {
+    try {
+        const response = await fetch('/view?filename=fixableflow_savepath.log&type=output&t=' + Date.now());
+        if (response.ok) {
+            const text = await response.text();
+            console.log("Log file content:", text);
+            return text;
+        } else {
+            console.log("Log file not found or not accessible");
         }
-        
-        if (originalOnMessage) {
-            originalOnMessage.apply(this, arguments);
-        }
-    };
-}
+    } catch (error) {
+        console.error("Error reading log:", error);
+    }
+    return null;
+};
 
-console.log("RGBLineArtDividerFast extension loaded - fallback mode");
+console.log("[RGBLineArtDividerFast] Extension loaded - log file mode");
