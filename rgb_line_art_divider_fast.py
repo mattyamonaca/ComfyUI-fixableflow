@@ -446,10 +446,10 @@ class RGBLineArtDividerFast:
         }
 
     RETURN_TYPES = ("IMAGE", "IMAGE", "INT", "STRING")
-    RETURN_NAMES = ("composite", "base_color", "layer_count", "psd_path")
+    RETURN_NAMES = ("composite", "base_color", "layer_count", "psd_filename")  # psd_pathからpsd_filenameに変更
     FUNCTION = "execute"
     CATEGORY = "LayerDivider"
-    OUTPUT_NODE = False  # Falseに変更して通常のノードとして扱う
+    OUTPUT_NODE = False
 
     def execute(self, line_art, base_color, color_tolerance, line_blend_mode, 
                 merge_small_regions, min_region_size, max_colors):
