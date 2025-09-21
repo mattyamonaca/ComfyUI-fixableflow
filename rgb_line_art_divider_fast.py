@@ -537,6 +537,7 @@ class RGBLineArtDividerFast:
                     ).astype(np.uint8)
             
             print("[RGBLineArtDividerFast] Execution completed successfully!")
+            print(f"[RGBLineArtDividerFast] Returning PSD path: {filename}")
             
             # 出力
             return (

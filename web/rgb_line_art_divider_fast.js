@@ -75,8 +75,41 @@ app.registerExtension({
         // Override the onExecuted method to capture the PSD path
         const originalOnExecuted = node.onExecuted;
         node.onExecuted = function(output) {
-            // Debug logging
-            console.log("RGBLineArtDividerFast onExecuted called with:", output);
+            // Comprehensive debug logging
+            console.log("=== RGBLineArtDividerFast onExecuted Debug ===");
+            console.log("Full output:", output);
+            console.log("Output type:", typeof output);
+            console.log("Output is array:", Array.isArray(output));
+            
+            if (output) {
+                console.log("Output keys:", Object.keys(output));
+                
+                // Log nested properties
+                if (output.psd_path) {
+                    console.log("output.psd_path exists:", output.psd_path);
+                }
+                if (output.text) {
+                    console.log("output.text exists:", output.text);
+                }
+                if (output.ui) {
+                    console.log("output.ui exists:", output.ui);
+                }
+                
+                // Check each array element if it's an array
+                if (Array.isArray(output)) {
+                    output.forEach((item, index) => {
+                        console.log(`output[${index}]:`, item);
+                        console.log(`output[${index}] type:`, typeof item);
+                        if (Array.isArray(item)) {
+                            console.log(`output[${index}] is array of length:`, item.length);
+                            if (item.length > 0) {
+                                console.log(`output[${index}][0]:`, item[0]);
+                            }
+                        }
+                    });
+                }
+            }
+            console.log("=== End Debug ===");
             
             // Call original handler if it exists
             if (originalOnExecuted) {
@@ -109,6 +142,14 @@ app.registerExtension({
                 }
             }
             
+            // Method 4: Check for text output (ComfyUI sometimes returns string outputs this way)
+            if (!psdPath && output && output.text) {
+                if (Array.isArray(output.text) && output.text.length > 0) {
+                    psdPath = output.text[0];
+                    console.log("Method 4 - Found PSD path from text array:", psdPath);
+                }
+            }
+            
             // Update button if we found a path
             if (psdPath) {
                 node.psdPath = psdPath;
@@ -119,6 +160,7 @@ app.registerExtension({
                 console.log("PSD download enabled for:", psdPath);
             } else {
                 console.warn("Could not find PSD path in output");
+                console.warn("Please check the debug logs above to understand the output structure");
             }
         };
         
