@@ -160,6 +160,18 @@ def fill_areas_enhanced(image, labeled_array, num_features, line_art_label, line
     result_array = np.zeros_like(image_array)
     
     print(f"Total regions detected: {num_features}")
+    print(f"Line art label: {line_art_label}")
+    
+    # デバッグ用：label=0の領域の色を調査
+    if line_art_label == 0:
+        line_mask = labeled_array == 0
+        line_pixels = image_array[line_mask]
+        if len(line_pixels) > 0:
+            # ユニークな色とその頻度を表示
+            unique_colors, counts = np.unique(line_pixels, axis=0, return_counts=True)
+            print(f"[DEBUG] Colors in label=0 region:")
+            for color, count in zip(unique_colors[:10], counts[:10]):  # 上位10色を表示
+                print(f"  Color {color}: {count} pixels")
     
     # 各ラベル領域を処理
     for label_id in range(0, num_features + 1):

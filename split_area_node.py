@@ -6,7 +6,8 @@ Split Area Node for ComfyUI
 import torch
 import numpy as np
 from PIL import Image, ImageOps
-from scipy.ndimage import label
+from scipy.ndimage import label, binary_fill_holes, binary_closing, binary_opening, binary_erosion, binary_dilation
+from scipy.ndimage import distance_transform_edt
 import cv2
 import folder_paths
 import os
@@ -130,8 +131,75 @@ def thicken_and_recolor_lines(base_image, lineart, thickness=3, new_color=(0, 0,
     return combined_image
 
 
+def smooth_regions(labeled_array, num_features, smoothing_iterations=3, 
+                   fill_holes=True, min_area=50, connect_fragments=True):
+    """
+    検出された領域をスムース化する
+    
+    Args:
+        labeled_array: ラベル付けされた領域配列
+        num_features: 領域数
+        smoothing_iterations: スムージング処理の反復回数
+        fill_holes: 穴埋め処理を行うか
+        min_area: 最小領域サイズ（これより小さい領域は削除）
+        connect_fragments: 分断された領域を接続するか
+    
+    Returns:
+        スムース化されたラベル配列
+    """
+    smoothed_array = np.zeros_like(labeled_array)
+    
+    for region_id in range(1, num_features + 1):
+        # 各領域を個別に処理
+        region_mask = (labeled_array == region_id).astype(np.uint8)
+        
+        # 小さすぎる領域はスキップ
+        if np.sum(region_mask) < min_area:
+            continue
+        
+        # 1. モルフォロジー演算で飛び点を除去
+        # Opening（収縮→膨張）で小さな飛び点を除去
+        kernel_small = np.ones((3, 3), np.uint8)
+        region_mask = cv2.morphologyEx(region_mask, cv2.MORPH_OPEN, kernel_small)
+        
+        # 2. 分断された領域の接続（オプション）
+        if connect_fragments:
+            # 距離変換を使用して近い領域を接続
+            dist_transform = distance_transform_edt(1 - region_mask)
+            region_mask = (dist_transform < 3).astype(np.uint8)
+        
+        # 3. 穴埋め処理
+        if fill_holes:
+            region_mask = binary_fill_holes(region_mask).astype(np.uint8)
+        
+        # 4. Closing（膨張→収縮）で小さな隙間を埋める
+        kernel_medium = np.ones((5, 5), np.uint8)
+        region_mask = cv2.morphologyEx(region_mask, cv2.MORPH_CLOSE, kernel_medium)
+        
+        # 5. エッジのスムージング
+        for _ in range(smoothing_iterations):
+            # ガウシアンブラーでエッジを滑らかにする
+            blurred = cv2.GaussianBlur(region_mask.astype(np.float32), (7, 7), 1.5)
+            # 閾値処理で二値化
+            region_mask = (blurred > 0.5).astype(np.uint8)
+            
+            # 追加のClosing処理
+            region_mask = cv2.morphologyEx(region_mask, cv2.MORPH_CLOSE, kernel_small)
+        
+        # 6. 最終的な穴埋め
+        if fill_holes:
+            region_mask = binary_fill_holes(region_mask).astype(np.uint8)
+        
+        # スムース化された領域を結果に追加
+        smoothed_array[region_mask == 1] = region_id
+    
+    return smoothed_array
+
+
 def process_split_area(lineart_image, fill_image=None, thickness=1, threshold=128, 
-                       use_fill_colors=False, random_seed=None):
+                       use_fill_colors=False, random_seed=None, 
+                       enable_smoothing=True, smoothing_iterations=3,
+                       fill_holes=True, min_area=50):
     """
     線画を分割して各領域を色分けする処理
     
@@ -142,9 +210,13 @@ def process_split_area(lineart_image, fill_image=None, thickness=1, threshold=12
         threshold: 二値化の閾値
         use_fill_colors: 塗り画像の色を使用するか
         random_seed: ランダムシード
+        enable_smoothing: 領域のスムージングを有効にするか
+        smoothing_iterations: スムージング処理の反復回数
+        fill_holes: 穴埋め処理を行うか
+        min_area: 最小領域サイズ
     
     Returns:
-        処理済みの画像、バイナリ画像
+        処理済みの画像、バイナリ画像、スムース化されたラベル配列
     """
     if random_seed is not None:
         np.random.seed(random_seed)
@@ -166,6 +238,17 @@ def process_split_area(lineart_image, fill_image=None, thickness=1, threshold=12
     
     # 輪郭検出
     labeled_array, num_features = find_contours(binary_image)
+    
+    # 領域のスムージング処理
+    if enable_smoothing:
+        labeled_array = smooth_regions(
+            labeled_array, 
+            num_features, 
+            smoothing_iterations=smoothing_iterations,
+            fill_holes=fill_holes,
+            min_area=min_area,
+            connect_fragments=True
+        )
     
     # 出力画像の作成
     split_image = np.array(lineart_image.convert("RGBA"))
@@ -200,7 +283,7 @@ def process_split_area(lineart_image, fill_image=None, thickness=1, threshold=12
     # PIL形式に変換
     colored_image = Image.fromarray(split_image.astype(np.uint8))
     
-    return colored_image, binary_image
+    return colored_image, binary_image, labeled_array
 
 
 class SplitAreaNode:
@@ -232,6 +315,30 @@ class SplitAreaNode:
                     "display": "slider",
                     "display_label": "Binary Threshold"
                 }),
+                "enable_smoothing": ("BOOLEAN", {
+                    "default": True,
+                    "display_label": "Enable Region Smoothing"
+                }),
+                "smoothing_iterations": ("INT", {
+                    "default": 3,
+                    "min": 1,
+                    "max": 10,
+                    "step": 1,
+                    "display": "slider",
+                    "display_label": "Smoothing Iterations"
+                }),
+                "fill_holes": ("BOOLEAN", {
+                    "default": True,
+                    "display_label": "Fill Holes in Regions"
+                }),
+                "min_area": ("INT", {
+                    "default": 50,
+                    "min": 10,
+                    "max": 500,
+                    "step": 10,
+                    "display": "slider",
+                    "display_label": "Minimum Region Area"
+                }),
             },
             "optional": {
                 "fill_image": ("IMAGE",),
@@ -256,6 +363,8 @@ class SplitAreaNode:
     CATEGORY = "LayerDivider"
     
     def execute(self, lineart_image, thickness=1, threshold=128, 
+                enable_smoothing=True, smoothing_iterations=3,
+                fill_holes=True, min_area=50,
                 fill_image=None, use_fill_colors=False, random_seed=-1):
         """
         線画領域分割処理を実行
@@ -282,18 +391,18 @@ class SplitAreaNode:
         seed = None if random_seed == -1 else random_seed
         
         # 処理実行
-        colored_image, binary_image = process_split_area(
+        colored_image, binary_image, labeled_array = process_split_area(
             lineart_pil,
             fill_pil,
             thickness,
             threshold,
             use_fill_colors,
-            seed
+            seed,
+            enable_smoothing,
+            smoothing_iterations,
+            fill_holes,
+            min_area
         )
-        
-        # 領域マスクの作成
-        binary_array = np.array(binary_image, dtype=np.uint8)
-        labeled_array, _ = label(binary_array)
         region_mask = (labeled_array > 0).astype(np.float32)
         region_mask = np.expand_dims(region_mask, axis=0)
         region_mask = np.expand_dims(region_mask, axis=-1)
@@ -359,6 +468,30 @@ class SplitAreaAdvancedNode:
                     "default": True,
                     "display_label": "Preserve Original Lines"
                 }),
+                "enable_smoothing": ("BOOLEAN", {
+                    "default": True,
+                    "display_label": "Enable Region Smoothing"
+                }),
+                "smoothing_strength": ("INT", {
+                    "default": 5,
+                    "min": 1,
+                    "max": 15,
+                    "step": 1,
+                    "display": "slider",
+                    "display_label": "Smoothing Strength"
+                }),
+                "fill_region_holes": ("BOOLEAN", {
+                    "default": True,
+                    "display_label": "Fill Region Holes"
+                }),
+                "min_region_size": ("INT", {
+                    "default": 100,
+                    "min": 10,
+                    "max": 1000,
+                    "step": 10,
+                    "display": "slider",
+                    "display_label": "Minimum Region Size"
+                }),
                 "line_color": ("STRING", {
                     "default": "0,0,0",
                     "display_label": "Line Color (R,G,B)"
@@ -375,7 +508,9 @@ class SplitAreaAdvancedNode:
     
     def execute(self, lineart_image, thickness=1, threshold=128, dilation_iterations=1,
                 color_mode="random", output_mode="colored", fill_image=None,
-                random_seed=-1, preserve_lines=True, line_color="0,0,0"):
+                random_seed=-1, preserve_lines=True, line_color="0,0,0",
+                enable_smoothing=True, smoothing_strength=5, 
+                fill_region_holes=True, min_region_size=100):
         """
         高度な線画領域分割処理
         
@@ -438,6 +573,16 @@ class SplitAreaAdvancedNode:
         # 輪郭検出
         labeled_array, num_features = find_contours(binary_image)
         
+        # 領域のスムージング処理（Advanced版用の強化版）
+        if enable_smoothing:
+            labeled_array = smooth_regions_advanced(
+                labeled_array, 
+                num_features, 
+                smoothing_strength=smoothing_strength,
+                fill_holes=fill_region_holes,
+                min_area=min_region_size
+            )
+        
         # カラーパレットの生成
         colors = generate_color_palette(num_features, color_mode, fill_pil)
         
@@ -495,6 +640,108 @@ class SplitAreaAdvancedNode:
         
         return (output_tensor, visualization_tensor, binary_tensor, 
                 region_mask_tensor, num_regions_int)
+
+
+def smooth_regions_advanced(labeled_array, num_features, smoothing_strength=5, 
+                           fill_holes=True, min_area=100):
+    """
+    Advanced版用の強化されたスムージング処理
+    
+    Args:
+        labeled_array: ラベル付けされた領域配列
+        num_features: 領域数
+        smoothing_strength: スムージングの強度
+        fill_holes: 穴埋め処理を行うか
+        min_area: 最小領域サイズ
+    
+    Returns:
+        スムース化されたラベル配列
+    """
+    smoothed_array = np.zeros_like(labeled_array)
+    
+    # カーネルサイズをスムージング強度に応じて調整
+    kernel_sizes = {
+        'small': max(3, smoothing_strength // 2),
+        'medium': smoothing_strength,
+        'large': smoothing_strength + 2
+    }
+    
+    for region_id in range(1, num_features + 1):
+        # 各領域を個別に処理
+        region_mask = (labeled_array == region_id).astype(np.uint8)
+        
+        # 小さすぎる領域はスキップ
+        if np.sum(region_mask) < min_area:
+            continue
+        
+        # 1. 初期のノイズ除去
+        kernel_small = cv2.getStructuringElement(
+            cv2.MORPH_ELLIPSE, 
+            (kernel_sizes['small'], kernel_sizes['small'])
+        )
+        region_mask = cv2.morphologyEx(region_mask, cv2.MORPH_OPEN, kernel_small)
+        
+        # 2. メディアンフィルタで飛び点を除去
+        region_mask = cv2.medianBlur(region_mask, kernel_sizes['small'])
+        
+        # 3. 穴埋め処理（第1段階）
+        if fill_holes:
+            region_mask = binary_fill_holes(region_mask).astype(np.uint8)
+        
+        # 4. 距離変換を使用した領域の拡張と収縮
+        dist_transform = cv2.distanceTransform(region_mask, cv2.DIST_L2, 5)
+        
+        # 閾値を動的に設定（領域の大きさに応じて）
+        threshold = np.percentile(dist_transform[dist_transform > 0], 20) if np.any(dist_transform > 0) else 1
+        region_mask = (dist_transform > threshold * 0.3).astype(np.uint8)
+        
+        # 5. モルフォロジー勾配でエッジを滑らかに
+        kernel_medium = cv2.getStructuringElement(
+            cv2.MORPH_ELLIPSE, 
+            (kernel_sizes['medium'], kernel_sizes['medium'])
+        )
+        gradient = cv2.morphologyEx(region_mask, cv2.MORPH_GRADIENT, kernel_medium)
+        
+        # 6. クロージング処理で隙間を埋める
+        region_mask = cv2.morphologyEx(region_mask, cv2.MORPH_CLOSE, kernel_medium)
+        
+        # 7. バイラテラルフィルタでエッジを保持しながらスムージング
+        region_float = region_mask.astype(np.float32)
+        for _ in range(smoothing_strength // 3):
+            region_float = cv2.bilateralFilter(region_float, 9, 75, 75)
+        
+        # 8. 適応的閾値処理で二値化
+        region_mask = (region_float > 0.5).astype(np.uint8)
+        
+        # 9. 最終的なモルフォロジー処理
+        kernel_large = cv2.getStructuringElement(
+            cv2.MORPH_ELLIPSE, 
+            (kernel_sizes['large'], kernel_sizes['large'])
+        )
+        region_mask = cv2.morphologyEx(region_mask, cv2.MORPH_CLOSE, kernel_large)
+        region_mask = cv2.morphologyEx(region_mask, cv2.MORPH_OPEN, kernel_small)
+        
+        # 10. 最終的な穴埋め
+        if fill_holes:
+            region_mask = binary_fill_holes(region_mask).astype(np.uint8)
+            
+            # 内部の小さな穴も埋める
+            contours, _ = cv2.findContours(1 - region_mask, cv2.RETR_TREE, cv2.CHAIN_APPROX_SIMPLE)
+            for contour in contours:
+                area = cv2.contourArea(contour)
+                if area < min_area:
+                    cv2.drawContours(region_mask, [contour], -1, 1, -1)
+        
+        # 11. エッジの最終スムージング
+        region_mask = cv2.GaussianBlur(region_mask.astype(np.float32), 
+                                       (kernel_sizes['large'], kernel_sizes['large']), 
+                                       smoothing_strength / 3)
+        region_mask = (region_mask > 0.5).astype(np.uint8)
+        
+        # スムース化された領域を結果に追加
+        smoothed_array[region_mask == 1] = region_id
+    
+    return smoothed_array
 
 
 def generate_color_palette(num_colors, mode="random", fill_image=None):
