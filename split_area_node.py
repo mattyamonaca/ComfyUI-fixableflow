@@ -147,52 +147,77 @@ def smooth_regions(labeled_array, num_features, smoothing_iterations=3,
     Returns:
         スムース化されたラベル配列
     """
-    smoothed_array = np.zeros_like(labeled_array)
+    print(f"[DEBUG] Starting smooth_regions: num_features={num_features}, iterations={smoothing_iterations}")
+    # 元の配列をコピーして作業（元のラベルを保持）
+    smoothed_array = np.copy(labeled_array)
+    processed_regions = 0
     
     for region_id in range(1, num_features + 1):
         # 各領域を個別に処理
-        region_mask = (labeled_array == region_id).astype(np.uint8)
+        region_mask = (labeled_array == region_id)
+        original_pixels = np.sum(region_mask)
         
-        # 小さすぎる領域はスキップ
-        if np.sum(region_mask) < min_area:
+        # 領域が存在しない場合はスキップ
+        if original_pixels == 0:
+            print(f"[DEBUG] Region {region_id}: No pixels found")
             continue
         
-        # 1. モルフォロジー演算で飛び点を除去
-        # Opening（収縮→膨張）で小さな飛び点を除去
-        kernel_small = np.ones((3, 3), np.uint8)
-        region_mask = cv2.morphologyEx(region_mask, cv2.MORPH_OPEN, kernel_small)
+        # 小さすぎる領域でも、元のままで保持（削除しない）
+        if original_pixels < min_area:
+            print(f"[DEBUG] Region {region_id}: Small region kept as-is ({original_pixels} pixels)")
+            # 元のラベルをそのまま保持
+            continue
         
-        # 2. 分断された領域の接続（オプション）
-        if connect_fragments:
-            # 距離変換を使用して近い領域を接続
-            dist_transform = distance_transform_edt(1 - region_mask)
-            region_mask = (dist_transform < 3).astype(np.uint8)
+        print(f"[DEBUG] Processing region {region_id}: original pixels = {original_pixels}")
         
-        # 3. 穴埋め処理
+        # uint8に変換（0 or 1）
+        region_binary = region_mask.astype(np.uint8)
+        
+        # 1. 穴埋め処理を最初に行う（内部の穴を埋める）
         if fill_holes:
-            region_mask = binary_fill_holes(region_mask).astype(np.uint8)
+            try:
+                region_binary = binary_fill_holes(region_binary).astype(np.uint8)
+            except:
+                print(f"[DEBUG] Region {region_id}: Failed fill_holes, using original")
+                region_binary = region_mask.astype(np.uint8)
         
-        # 4. Closing（膨張→収縮）で小さな隙間を埋める
-        kernel_medium = np.ones((5, 5), np.uint8)
-        region_mask = cv2.morphologyEx(region_mask, cv2.MORPH_CLOSE, kernel_medium)
+        # 2. メディアンフィルタでノイズ除去（小さいカーネルサイズ）
+        if region_binary.max() > 0:  # 領域が残っている場合のみ
+            region_binary = cv2.medianBlur(region_binary, 3)
         
-        # 5. エッジのスムージング
-        for _ in range(smoothing_iterations):
-            # ガウシアンブラーでエッジを滑らかにする
-            blurred = cv2.GaussianBlur(region_mask.astype(np.float32), (7, 7), 1.5)
-            # 閾値処理で二値化
-            region_mask = (blurred > 0.5).astype(np.uint8)
+        # 3. Closing処理で小さな隙間を埋める
+        kernel_small = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3))
+        region_binary = cv2.morphologyEx(region_binary, cv2.MORPH_CLOSE, kernel_small)
+        
+        # 4. 軽いスムージング（反復回数を制限）
+        for i in range(min(smoothing_iterations, 3)):  # 最大3回に制限
+            if region_binary.max() == 0:  # 領域が消えた場合は処理を中止
+                print(f"[DEBUG] Region {region_id}: Lost during smoothing iteration {i}")
+                region_binary = region_mask.astype(np.uint8)
+                break
             
-            # 追加のClosing処理
-            region_mask = cv2.morphologyEx(region_mask, cv2.MORPH_CLOSE, kernel_small)
+            # ガウシアンブラーは軽めに（カーネルサイズを小さく）
+            blurred = cv2.GaussianBlur(region_binary.astype(np.float32), (5, 5), 1.0)
+            # 閾値を調整（0.3でより多くのピクセルを保持）
+            region_binary = (blurred > 0.3).astype(np.uint8)
         
-        # 6. 最終的な穴埋め
-        if fill_holes:
-            region_mask = binary_fill_holes(region_mask).astype(np.uint8)
-        
-        # スムース化された領域を結果に追加
-        smoothed_array[region_mask == 1] = region_id
+        # 5. 最終的な領域チェック
+        final_pixels = np.sum(region_binary)
+        if final_pixels == 0:
+            print(f"[DEBUG] Region {region_id}: Lost during processing, restoring original")
+            # 元の領域を復元
+            smoothed_array[labeled_array == region_id] = region_id
+        else:
+            # スムース化された領域で更新
+            # まず該当領域をクリア
+            smoothed_array[labeled_array == region_id] = 0
+            # 新しい領域を設定
+            smoothed_array[region_binary == 1] = region_id
+            processed_regions += 1
+            print(f"[DEBUG] Region {region_id}: Smoothed successfully (final pixels = {final_pixels})")
     
+    print(f"[DEBUG] Processed {processed_regions}/{num_features} regions")
+    print(f"[DEBUG] Final smoothed_array unique values: {np.unique(smoothed_array)}")
     return smoothed_array
 
 
@@ -238,10 +263,12 @@ def process_split_area(lineart_image, fill_image=None, thickness=1, threshold=12
     
     # 輪郭検出
     labeled_array, num_features = find_contours(binary_image)
+    print(f"[DEBUG] Before smoothing: num_features={num_features}, unique labels={np.unique(labeled_array)}")
     
     # 領域のスムージング処理
     if enable_smoothing:
-        labeled_array = smooth_regions(
+        print(f"[DEBUG] Smoothing enabled with iterations={smoothing_iterations}, fill_holes={fill_holes}, min_area={min_area}")
+        labeled_array_smoothed = smooth_regions(
             labeled_array, 
             num_features, 
             smoothing_iterations=smoothing_iterations,
@@ -249,6 +276,13 @@ def process_split_area(lineart_image, fill_image=None, thickness=1, threshold=12
             min_area=min_area,
             connect_fragments=True
         )
+        # スムース化後も元のラベルが残っていない場合は元の配列を使用
+        if np.max(labeled_array_smoothed) > 0:
+            labeled_array = labeled_array_smoothed
+        else:
+            print("[DEBUG] Warning: Smoothing resulted in empty array, using original")
+    
+    print(f"[DEBUG] After smoothing: unique labels={np.unique(labeled_array)}")
     
     # 出力画像の作成
     split_image = np.array(lineart_image.convert("RGBA"))

@@ -1,6 +1,7 @@
 """
 Simple Fill Area Node for ComfyUI
-線画の塗り領域を単純に均一化するノード（統合処理なし）
+塗り領域を単純に均一化するノード（統合処理なし）
+SplitAreaNodeからのregion_mask入力を使用
 """
 
 import torch
@@ -41,51 +42,6 @@ def pil_to_tensor(image):
     image_np = np.array(image).astype(np.float32) / 255.0
     image_np = np.expand_dims(image_np, axis=0)
     return torch.from_numpy(image_np)
-
-
-def rgba_to_binary(image):
-    """RGBA画像をバイナリ画像（線画）に変換
-    
-    ExtractLineArtNodeの出力（RGBA）を受け取り、
-    アルファチャンネルを使って線画を生成する
-    """
-    if image.mode != 'RGBA':
-        return image.convert('RGB')
-    
-    # アルファチャンネルを取得
-    alpha = np.array(image.split()[3])
-    
-    # アルファチャンネルから線画を生成
-    # アルファ値が高い（不透明）部分を黒、低い（透明）部分を白にする
-    binary = np.ones((alpha.shape[0], alpha.shape[1], 3), dtype=np.uint8) * 255
-    mask = alpha > 128  # 閾値を調整可能
-    binary[mask] = 0  # 線画部分を黒に
-    
-    return Image.fromarray(binary, mode='RGB')
-
-
-def find_contours(binary_image):
-    """バイナリ画像から輪郭を検出する（Split Areaと同じ実装）"""
-    # PIL ImageをNumPy配列に変換
-    binary_array = np.array(binary_image, dtype=np.uint8)
-    
-    # グレースケールに変換
-    if len(binary_array.shape) == 3:
-        # RGBの平均値でグレースケール化
-        gray = np.mean(binary_array, axis=2).astype(np.uint8)
-    else:
-        gray = binary_array
-    
-    # 白黒反転（線画が黒、背景が白の場合）
-    # 線画（黒）部分を0、白い部分を1として扱う
-    binary_mask = gray > 128
-    
-    # 連結成分のラベリング
-    labeled_array, num_features = label(binary_mask)
-    
-    print(f"[FillAreaSimple] Detected {num_features} regions")
-    
-    return labeled_array, num_features
 
 
 def get_most_frequent_color(image_array, mask):
@@ -129,38 +85,42 @@ def fill_areas_simple(image, labeled_array, num_features):
     return Image.fromarray(result_array)
 
 
-def process_fill_area_simple(binary_image, fill_image):
+def process_fill_area_with_mask(region_mask, fill_image):
     """
-    シンプルな塗り領域均一化処理
+    region_maskを使用した塗り領域均一化処理
     
     Args:
-        binary_image: 輪郭画像（線画）
-        fill_image: 塗り画像
+        region_mask: SplitAreaNodeからのラベル付き領域マスク（numpy array）
+        fill_image: 塗り画像（PIL Image）
     
     Returns:
-        処理済みの画像
+        処理済みの画像, 領域数
     """
-    # 画像サイズの検証と調整
-    if binary_image.size != fill_image.size:
-        fill_image = fill_image.resize(binary_image.size, Image.Resampling.LANCZOS)
+    # region_maskからラベル配列を取得
+    labeled_array = region_mask.astype(np.int32)
+    num_features = int(np.max(labeled_array))
     
-    # 輪郭検出とラベリング
-    labeled_array, num_features = find_contours(binary_image)
+    print(f"[FillAreaSimple] Using region mask with {num_features} regions")
     
     if num_features == 0:
-        # 輪郭が見つからない場合は元の画像をそのまま返す
-        return fill_image
+        # 領域が見つからない場合は元の画像をそのまま返す
+        return fill_image, 0
+    
+    # 画像サイズの検証と調整
+    mask_shape = labeled_array.shape[:2]
+    if fill_image.size != (mask_shape[1], mask_shape[0]):
+        fill_image = fill_image.resize((mask_shape[1], mask_shape[0]), Image.Resampling.LANCZOS)
     
     # 各領域を最頻出色で塗りつぶし（統合処理なし）
     result_image = fill_areas_simple(fill_image, labeled_array, num_features)
     
-    return result_image
+    return result_image, num_features
 
 
 class FillAreaSimpleNode:
     """
     シンプルな塗り領域均一化ノード
-    線画の輪郭を検出し、各領域を単色で塗りつぶす（統合処理なし）
+    SplitAreaNodeからのregion_maskを使用して、各領域を単色で塗りつぶす
     """
     
     def __init__(self):
@@ -170,8 +130,8 @@ class FillAreaSimpleNode:
     def INPUT_TYPES(cls):
         return {
             "required": {
-                "binary_image": ("IMAGE",),
                 "fill_image": ("IMAGE",),
+                "region_mask": ("MASK",),  # SplitAreaNodeからの入力
             }
         }
     
@@ -182,13 +142,13 @@ class FillAreaSimpleNode:
     
     CATEGORY = "LayerDivider"
     
-    def execute(self, binary_image, fill_image):
+    def execute(self, fill_image, region_mask):
         """
         シンプルな塗り領域均一化処理を実行
         
         Args:
-            binary_image: 輪郭画像（線画）のテンソル - ExtractLineArtNodeからのRGBA画像にも対応
             fill_image: 塗り画像のテンソル
+            region_mask: SplitAreaNodeからの領域マスク
         
         Returns:
             filled_image: 均一化された塗り画像
@@ -196,22 +156,21 @@ class FillAreaSimpleNode:
             region_count: 検出された領域数
         """
         
-        # テンソルをPIL Imageに変換
-        binary_pil = tensor_to_pil(binary_image)
+        # 塗り画像をPIL Imageに変換
         fill_pil = tensor_to_pil(fill_image)
         
-        # ExtractLineArtNodeからのRGBA画像を処理
-        if binary_pil.mode == 'RGBA':
-            binary_pil = rgba_to_binary(binary_pil)
+        # MASKテンソルをnumpy配列に変換
+        mask_np = region_mask.cpu().detach().numpy()
+        if len(mask_np.shape) == 4:
+            mask_np = mask_np[0]  # バッチの最初を取得
+        if len(mask_np.shape) == 3 and mask_np.shape[2] == 1:
+            mask_np = mask_np[:, :, 0]  # チャンネル次元を削除
         
-        # 処理実行
-        result_image = process_fill_area_simple(
-            binary_pil.convert("RGB"),
+        # region_maskを使用して処理
+        result_image, num_features = process_fill_area_with_mask(
+            mask_np,
             fill_pil.convert("RGB")
         )
-        
-        # 領域数を取得（デバッグ用）
-        labeled_array, num_features = find_contours(binary_pil.convert("RGB"))
         
         # 比較用のプレビュー画像を作成
         preview = create_comparison_preview(fill_pil, result_image)
@@ -226,7 +185,7 @@ class FillAreaSimpleNode:
 class FillAreaSimpleVisualizeNode:
     """
     シンプルな塗り領域均一化ノード（可視化機能付き）
-    各領域の境界や領域番号を表示できる
+    SplitAreaNodeからのregion_maskを使用して、各領域の境界や領域番号を表示
     """
     
     def __init__(self):
@@ -236,8 +195,8 @@ class FillAreaSimpleVisualizeNode:
     def INPUT_TYPES(cls):
         return {
             "required": {
-                "binary_image": ("IMAGE",),
                 "fill_image": ("IMAGE",),
+                "region_mask": ("MASK",),  # SplitAreaNodeからの入力
                 "visualization_mode": (["filled", "regions", "boundaries", "comparison"],),
                 "show_region_numbers": ("BOOLEAN", {
                     "default": False,
@@ -247,19 +206,19 @@ class FillAreaSimpleVisualizeNode:
         }
     
     RETURN_TYPES = ("IMAGE", "IMAGE", "INT", "MASK")
-    RETURN_NAMES = ("filled_image", "visualization", "region_count", "region_mask")
+    RETURN_NAMES = ("filled_image", "visualization", "region_count", "region_mask_out")
     
     FUNCTION = "execute"
     
     CATEGORY = "LayerDivider"
     
-    def execute(self, binary_image, fill_image, visualization_mode="filled", show_region_numbers=False):
+    def execute(self, fill_image, region_mask, visualization_mode="filled", show_region_numbers=False):
         """
         シンプルな塗り領域均一化処理を実行（可視化機能付き）
         
         Args:
-            binary_image: 輪郭画像（線画）のテンソル
             fill_image: 塗り画像のテンソル
+            region_mask: SplitAreaNodeからの領域マスク
             visualization_mode: 可視化モード
             show_region_numbers: 領域番号を表示するか
         
@@ -267,29 +226,25 @@ class FillAreaSimpleVisualizeNode:
             filled_image: 均一化された塗り画像
             visualization: 選択された可視化
             region_count: 検出された領域数
-            region_mask: 領域マスク
+            region_mask_out: 領域マスク（入力をそのまま出力）
         """
         
-        # テンソルをPIL Imageに変換
-        binary_pil = tensor_to_pil(binary_image)
+        # 塗り画像をPIL Imageに変換
         fill_pil = tensor_to_pil(fill_image)
-        
-        # ExtractLineArtNodeからのRGBA画像を処理
-        if binary_pil.mode == 'RGBA':
-            binary_pil = rgba_to_binary(binary_pil)
-        
-        # RGB変換
-        binary_rgb = binary_pil.convert("RGB")
         fill_rgb = fill_pil.convert("RGB")
         
-        # 輪郭検出とラベリング
-        labeled_array, num_features = find_contours(binary_rgb)
+        # MASKテンソルをnumpy配列に変換
+        mask_np = region_mask.cpu().detach().numpy()
+        if len(mask_np.shape) == 4:
+            mask_np = mask_np[0]  # バッチの最初を取得
+        if len(mask_np.shape) == 3 and mask_np.shape[2] == 1:
+            mask_np = mask_np[:, :, 0]  # チャンネル次元を削除
         
-        # 領域マスクの作成
-        region_mask = (labeled_array > 0).astype(np.float32)
-        region_mask = np.expand_dims(region_mask, axis=0)
-        region_mask = np.expand_dims(region_mask, axis=-1)
-        region_mask_tensor = torch.from_numpy(region_mask)
+        labeled_array = mask_np.astype(np.int32)
+        num_features = int(np.max(labeled_array))
+        
+        # 入力されたマスクをそのまま出力用に使用
+        region_mask_tensor = region_mask
         
         # 塗りつぶし処理
         result_image = fill_areas_simple(fill_rgb, labeled_array, num_features)
