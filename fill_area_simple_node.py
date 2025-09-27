@@ -8,6 +8,8 @@ import torch
 import numpy as np
 from PIL import Image
 from scipy.ndimage import label
+from sklearn.cluster import KMeans
+from skimage import color as skcolor
 import folder_paths
 import os
 
@@ -58,6 +60,62 @@ def get_most_frequent_color(image_array, mask):
         return tuple(unique_colors[most_frequent_idx])
 
 
+def merge_similar_regions(image, labeled_array, num_features, target_clusters):
+    """
+    類似した色の領域を統合してクラスタ数を削減
+    
+    Args:
+        image: PIL Image
+        labeled_array: ラベル配列
+        num_features: 現在の領域数
+        target_clusters: 目標クラスタ数
+    
+    Returns:
+        新しいラベル配列, 新しい領域数
+    """
+    image_array = np.array(image)
+    
+    # 各領域の代表色を取得
+    region_colors = []
+    region_ids = []
+    
+    for label_id in range(1, num_features + 1):
+        mask = labeled_array == label_id
+        if np.any(mask):
+            # 領域の平均色を計算
+            mean_color = image_array[mask].mean(axis=0)
+            region_colors.append(mean_color)
+            region_ids.append(label_id)
+    
+    if len(region_colors) == 0:
+        return labeled_array, 0
+    
+    # RGB色をLAB色空間に変換
+    region_colors_array = np.array(region_colors)
+    region_colors_lab = skcolor.rgb2lab(region_colors_array.reshape(-1, 1, 3) / 255.0).reshape(-1, 3)
+    
+    # K-meansクラスタリングで類似色をグループ化
+    kmeans = KMeans(n_clusters=min(target_clusters, len(region_colors)), random_state=42)
+    cluster_labels = kmeans.fit_predict(region_colors_lab)
+    
+    # 新しいラベル配列を作成
+    new_labeled_array = np.zeros_like(labeled_array)
+    
+    # 各領域を新しいクラスタIDに再マッピング
+    for i, original_id in enumerate(region_ids):
+        new_cluster_id = cluster_labels[i] + 1  # 0は背景用なので+1
+        mask = labeled_array == original_id
+        new_labeled_array[mask] = new_cluster_id
+    
+    # 背景はそのまま
+    background_mask = labeled_array == 0
+    new_labeled_array[background_mask] = 0
+    
+    new_num_features = len(np.unique(cluster_labels))
+    
+    return new_labeled_array, new_num_features
+
+
 def fill_areas_simple(image, labeled_array, num_features):
     """各領域を最頻出色で塗りつぶす（統合処理なし）"""
     image_array = np.array(image)
@@ -91,33 +149,40 @@ def fill_areas_simple(image, labeled_array, num_features):
     return Image.fromarray(result_array), cluster_colors
 
 
-def process_fill_area_with_mask(region_mask, fill_image):
+def process_fill_area_with_mask(region_mask, fill_image, max_clusters=50):
     """
-    region_maskを使用した塗り領域均一化処理
+    region_maskを使用した塗り領域均一化処理（クラスタ数制限付き）
     
     Args:
         region_mask: SplitAreaNodeからのラベル付き領域マスク（numpy array）
         fill_image: 塗り画像（PIL Image）
+        max_clusters: 最大クラスタ数（デフォルト50）
     
     Returns:
-        処理済みの画像, 領域数
+        処理済みの画像, 領域数, クラスタ色情報, ラベル配列
     """
     # region_maskからラベル配列を取得
     labeled_array = region_mask.astype(np.int32)
     num_features = int(np.max(labeled_array))
     
-    print(f"[FillAreaSimple] Using region mask with {num_features} regions")
+    print(f"[FillAreaSimple] Initial region count: {num_features} regions")
     
     if num_features == 0:
         # 領域が見つからない場合は元の画像をそのまま返す
-        return fill_image, 0
+        return fill_image, 0, {}, labeled_array
     
     # 画像サイズの検証と調整
     mask_shape = labeled_array.shape[:2]
     if fill_image.size != (mask_shape[1], mask_shape[0]):
         fill_image = fill_image.resize((mask_shape[1], mask_shape[0]), Image.Resampling.LANCZOS)
     
-    # 各領域を最頻出色で塗りつぶし（統合処理なし）
+    # 領域数が多すぎる場合は色でクラスタリングして統合
+    if num_features > max_clusters:
+        print(f"[FillAreaSimple] Too many regions ({num_features}). Merging to {max_clusters} clusters...")
+        labeled_array, num_features = merge_similar_regions(fill_image, labeled_array, num_features, max_clusters)
+        print(f"[FillAreaSimple] Merged to {num_features} regions")
+    
+    # 各領域を最頻出色で塗りつぶし
     result_image, cluster_colors = fill_areas_simple(fill_image, labeled_array, num_features)
     
     return result_image, num_features, cluster_colors, labeled_array
@@ -138,6 +203,14 @@ class FillAreaSimpleNode:
             "required": {
                 "fill_image": ("IMAGE",),
                 "region_mask": ("MASK",),  # SplitAreaNodeからの入力
+                "max_clusters": ("INT", {
+                    "default": 30,
+                    "min": 5,
+                    "max": 100,
+                    "step": 5,
+                    "display": "slider",
+                    "display_label": "Max Color Clusters"
+                }),
             }
         }
     
@@ -148,7 +221,7 @@ class FillAreaSimpleNode:
     
     CATEGORY = "LayerDivider"
     
-    def execute(self, fill_image, region_mask, **kwargs):
+    def execute(self, fill_image, region_mask, max_clusters=30, **kwargs):
         """
         シンプルな塗り領域均一化処理を実行
         
@@ -180,7 +253,8 @@ class FillAreaSimpleNode:
         # region_maskを使用して処理
         result_image, num_features, cluster_colors, labeled_array = process_fill_area_with_mask(
             mask_np,
-            fill_pil.convert("RGB")
+            fill_pil.convert("RGB"),
+            max_clusters
         )
         
         # 比較用のプレビュー画像を作成
