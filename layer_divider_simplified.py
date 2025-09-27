@@ -15,7 +15,7 @@ from pytoshop.enums import BlendMode
 from .extract_lineart_node import ExtractLineArtNode, ExtractLineArtAdvancedNode
 from .fill_area_node import FillAreaNode, FillAreaAdvancedNode
 from .fill_area_simple_node import FillAreaSimpleNode, FillAreaSimpleVisualizeNode
-from .split_area_node import SplitAreaNode, SplitAreaAdvancedNode
+from .split_area_node import SplitAreaNode
 from .fill_space_node import FillSpaceNode, FillSpaceAdvancedNode
 
 import cv2
@@ -341,7 +341,6 @@ NODE_CLASS_MAPPINGS = {
     "LayerDivider - Fill Area Simple": FillAreaSimpleNode,
     "LayerDivider - Fill Area Simple Visualize": FillAreaSimpleVisualizeNode,
     "LayerDivider - Split Area": SplitAreaNode,
-    "LayerDivider - Split Area Advanced": SplitAreaAdvancedNode,
     "LayerDivider - Fill Space": FillSpaceNode,
     "LayerDivider - Fill Space Advanced": FillSpaceAdvancedNode
 }
@@ -358,7 +357,6 @@ NODE_DISPLAY_NAME_MAPPINGS = {
     "LayerDivider - Fill Area Simple": "Fill Area Simple",
     "LayerDivider - Fill Area Simple Visualize": "Fill Area Simple (Visualize)",
     "LayerDivider - Split Area": "Split Area",
-    "LayerDivider - Split Area Advanced": "Split Area (Advanced)",
     "LayerDivider - Fill Space": "Fill Space",
     "LayerDivider - Fill Space Advanced": "Fill Space (Advanced)"
 }
