@@ -98,16 +98,17 @@ def find_closest_cluster_color(pixel_color, cluster_colors):
 
 
 def process_fill_space_with_clusters_progress(binary_image, original_image, cluster_info, 
-                                             invert_binary=True, progress_callback=None):
+                                             invert_binary=True, progress_callback=None, flat_image=None):
     """
     線画の下のピクセルをクラスタ色で塗りつぶす（K-means最適化版）
     
     Args:
         binary_image: バイナリ画像（線画）
-        original_image: 元の塗り画像（3枚目の入力）
+        original_image: 元の塗り画像（線画の下の色を取得するため）
         cluster_info: Fill Area Simpleからのクラスタ情報
         invert_binary: バイナリ画像を反転するか
-        progress_callback: プログレスバーのコールバック関数
+        progress_callback: プログレスバーのコールバック
+        flat_image: Fill Areaで処理された画像（ベース画像として使用）
     
     Returns:
         処理済みの画像
@@ -127,15 +128,23 @@ def process_fill_space_with_clusters_progress(binary_image, original_image, clus
     binary_array = np.array(binary_gray)
     original_array = np.array(original_image.convert('RGB'))
     
+    # ベース画像としてflat_imageを使用（なければoriginal_imageを使用）
+    if flat_image is not None:
+        base_array = np.array(flat_image.convert('RGB'))
+    else:
+        base_array = original_array.copy()
+    
     # クラスタ色情報を取得
     cluster_colors = cluster_info.get('colors', {})
     num_clusters = len(cluster_colors)
     
     if num_clusters == 0:
+        if flat_image is not None:
+            return flat_image
         return original_image
     
-    # 出力画像を初期化（元画像のコピー）
-    output_array = original_array.copy()
+    # 出力画像を初期化（flat_imageのコピー）
+    output_array = base_array.copy()
     
     # 白ピクセル（線画の下）のマスクを取得
     white_mask = binary_array == 255
@@ -221,15 +230,16 @@ def find_closest_cluster_color_optimized(pixel_color, cluster_colors, cluster_la
     return closest_color
 
 
-def process_fill_space_batch_optimized(binary_image, original_image, cluster_info, invert_binary=True):
+def process_fill_space_batch_optimized(binary_image, original_image, cluster_info, invert_binary=True, flat_image=None):
     """
     バッチ処理最適化版：K-meansでクラスタ間マッピング（超高速版）
     
     Args:
         binary_image: バイナリ画像（線画）
-        original_image: 元の塗り画像（3枚目の入力）
+        original_image: 元の塗り画像（線画の下の色を取得するため）
         cluster_info: Fill Area Simpleからのクラスタ情報
         invert_binary: バイナリ画像を反転するか
+        flat_image: Fill Areaで処理された画像（ベース画像として使用）
     
     Returns:
         処理済みの画像
@@ -249,15 +259,23 @@ def process_fill_space_batch_optimized(binary_image, original_image, cluster_inf
     binary_array = np.array(binary_gray)
     original_array = np.array(original_image.convert('RGB'))
     
+    # ベース画像としてflat_imageを使用（なければoriginal_imageを使用）
+    if flat_image is not None:
+        base_array = np.array(flat_image.convert('RGB'))
+    else:
+        base_array = original_array.copy()
+    
     # クラスタ色情報を取得
     cluster_colors = cluster_info.get('colors', {})
     num_clusters = len(cluster_colors)
     
     if num_clusters == 0:
+        if flat_image is not None:
+            return flat_image
         return original_image
     
-    # 出力画像を初期化
-    output_array = original_array.copy()
+    # 出力画像を初期化（flat_imageのコピー）
+    output_array = base_array.copy()
     
     # 白ピクセルのマスクを取得
     white_mask = binary_array == 255
@@ -369,7 +387,8 @@ class FillSpaceV2Node:
                 binary_pil, 
                 original_pil,
                 cluster_info,
-                invert_binary
+                invert_binary,
+                flat_pil  # flat_imageをベース画像として渡す
             )
         else:
             # 通常処理（プログレスバー付き）
@@ -379,11 +398,12 @@ class FillSpaceV2Node:
                 original_pil,
                 cluster_info,
                 invert_binary,
-                None  # プログレスバーコールバックは一時的に無効化
+                None,  # プログレスバーコールバックは一時的に無効化
+                flat_pil  # flat_imageをベース画像として渡す
             )
         
         # プレビュー画像の作成（前後比較）
-        preview = create_before_after_preview(original_pil, filled_image)
+        preview = create_before_after_preview(flat_pil, filled_image)
         
         # ComfyUIのテンソル形式に変換
         output_tensor = pil_to_tensor(filled_image)
