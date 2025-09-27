@@ -75,16 +75,16 @@ def merge_similar_regions(image, labeled_array, num_features, target_clusters):
     """
     image_array = np.array(image)
     
-    # 各領域の代表色を取得
+    # 各領域の代表色（最頻出色）を取得
     region_colors = []
     region_ids = []
     
     for label_id in range(1, num_features + 1):
         mask = labeled_array == label_id
         if np.any(mask):
-            # 領域の平均色を計算
-            mean_color = image_array[mask].mean(axis=0)
-            region_colors.append(mean_color)
+            # 領域の最頻出色を取得（平均色ではなく）
+            most_frequent_color = get_most_frequent_color(image_array, mask)
+            region_colors.append(most_frequent_color)
             region_ids.append(label_id)
     
     if len(region_colors) == 0:
