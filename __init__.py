@@ -18,6 +18,9 @@ from .fill_space_node_v2 import NODE_CLASS_MAPPINGS as FILL_SPACE_V2_MAPPINGS, N
 # モルフォロジー演算ノードをインポート
 from .morphology_node import NODE_CLASS_MAPPINGS as MORPHOLOGY_MAPPINGS, NODE_DISPLAY_NAME_MAPPINGS as MORPHOLOGY_DISPLAY_MAPPINGS
 
+# RGB Line Art Divider with Shade ノードをインポート
+from .rgb_line_art_divider_with_shade import NODE_CLASS_MAPPINGS as SHADE_MAPPINGS, NODE_DISPLAY_NAME_MAPPINGS as SHADE_DISPLAY_MAPPINGS
+
 # ノードマッピングを統合
 NODE_CLASS_MAPPINGS = {
     **RGB_NODE_CLASS_MAPPINGS,  # 新しいRGBノードを優先
@@ -26,7 +29,8 @@ NODE_CLASS_MAPPINGS = {
     **DEBUG_MAPPINGS,  # デバッグノードを追加
     **ENHANCED_MAPPINGS,  # 拡張版塗りつぶしノードを追加
     **FILL_SPACE_V2_MAPPINGS,  # Fill Space V2ノードを追加
-    **MORPHOLOGY_MAPPINGS  # モルフォロジー演算ノードを追加
+    **MORPHOLOGY_MAPPINGS,  # モルフォロジー演算ノードを追加
+    **SHADE_MAPPINGS  # RGB Line Art Divider with Shade ノードを追加
 }
 
 NODE_DISPLAY_NAME_MAPPINGS = {
@@ -36,7 +40,8 @@ NODE_DISPLAY_NAME_MAPPINGS = {
     **DEBUG_DISPLAY_MAPPINGS,  # デバッグノードを追加
     **ENHANCED_DISPLAY_MAPPINGS,  # 拡張版塗りつぶしノードを追加
     **FILL_SPACE_V2_DISPLAY_MAPPINGS,  # Fill Space V2ノードを追加
-    **MORPHOLOGY_DISPLAY_MAPPINGS  # モルフォロジー演算ノードを追加
+    **MORPHOLOGY_DISPLAY_MAPPINGS,  # モルフォロジー演算ノードを追加
+    **SHADE_DISPLAY_MAPPINGS  # RGB Line Art Divider with Shade ノードを追加
 }
 
 # Web拡張機能の自動読み込みのためのパス設定
