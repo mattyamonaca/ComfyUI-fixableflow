@@ -1,6 +1,7 @@
 """
-RGB Line Art Layer Divider with Shade - Advanced VERSION
+RGB Line Art Layer Divider with Shade - Fixed VERSION
 shade画像を追加入力として受け取り、各領域ごとにbase/light/shadeレイヤーを生成する拡張版
+画像サイズ自動調整とLayerFlagsエラー修正済み
 """
 
 from PIL import Image
@@ -15,7 +16,6 @@ import pytoshop
 from pytoshop.core import PsdFile
 from pytoshop import layers
 from pytoshop import enums
-from pytoshop.user import nested_layers
 import random
 import string
 from skimage import color as skcolor
@@ -64,9 +64,9 @@ def to_comfy_img(np_img):
     out_imgs = torch.from_numpy(out_imgs.astype(np.float32) / 255.)
     return out_imgs
 
-def add_psd_to_group(group_layers, img, name, mode):
+def add_psd(psd, img, name, mode):
     """
-    グループ内にレイヤーを追加
+    PSDファイルにレイヤーを追加（RGBLineArtDividerFastと同じ実装）
     """
     # 確実にuint8型、4チャンネルに変換
     if img.shape[2] == 3:
@@ -96,8 +96,8 @@ def add_psd_to_group(group_layers, img, name, mode):
         opacity=255,
     )
     
-    group_layers.append(new_layer)
-    return group_layers
+    psd.layer_and_mask_info.layer_info.layer_records.append(new_layer)
+    return psd
 
 def rgb_to_lab(rgb_image):
     """RGB画像をLAB色空間に変換"""
@@ -257,11 +257,20 @@ def merge_colors_by_tolerance(unique_colors, color_counts, tolerance, max_colors
 def create_shade_layers(base_image_cv, shade_image_cv, color_regions, luminance_threshold=5.0):
     """
     各色領域ごとにbase/light/shadeレイヤーを作成
+    画像サイズを自動調整
     
     Returns:
         region_layers: {color: {'base': layer, 'light': layer, 'shade': layer}}の辞書
     """
     region_layers = {}
+    
+    # 画像サイズを統一（shadeをbase_colorのサイズにリサイズ）
+    base_height, base_width = base_image_cv.shape[:2]
+    shade_height, shade_width = shade_image_cv.shape[:2]
+    
+    if (shade_height != base_height) or (shade_width != base_width):
+        print(f"[WithShade] Resizing shade image from {shade_width}x{shade_height} to {base_width}x{base_height}")
+        shade_image_cv = cv2.resize(shade_image_cv, (base_width, base_height), interpolation=cv2.INTER_LINEAR)
     
     # shadeが確実にBGRA形式であることを確認
     if shade_image_cv.shape[2] == 3:
@@ -278,8 +287,8 @@ def create_shade_layers(base_image_cv, shade_image_cv, color_regions, luminance_
     for color_rgb, mask in color_regions.items():
         # この領域のレイヤーを初期化
         base_layer = np.zeros_like(base_image_cv, dtype=np.uint8)
-        light_layer = np.zeros_like(shade_image_cv, dtype=np.uint8)
-        shade_layer = np.zeros_like(shade_image_cv, dtype=np.uint8)
+        light_layer = np.zeros_like(base_image_cv, dtype=np.uint8)  # shade_image_cvではなくbase_image_cvのサイズで統一
+        shade_layer = np.zeros_like(base_image_cv, dtype=np.uint8)
         
         # マスクを確実にuint8に変換
         mask = np.clip(mask, 0, 255).astype(np.uint8)
@@ -323,75 +332,34 @@ def create_shade_layers(base_image_cv, shade_image_cv, color_regions, luminance_
     print(f"[WithShade] Created {len(region_layers)} region groups with base/light/shade layers")
     return region_layers
 
-def save_psd_with_shade_folders(base_color_cv, shade_cv, line_art_cv, region_layers, 
-                                output_dir, line_blend_mode):
+def save_psd_with_shade(base_color_cv, shade_cv, line_art_cv, region_layers, 
+                        output_dir, line_blend_mode):
     """
-    フォルダ化されたPSDを保存（領域ごとにbase/light/shadeをグループ化）
+    シンプルな方式でPSDを保存（フォルダ化なし、LayerFlags不使用）
     """
     height, width = base_color_cv.shape[:2]
     
     # PSDファイルを作成
     psd = pytoshop.core.PsdFile(num_channels=3, height=height, width=width)
     
-    # 全体の背景レイヤーを追加
+    # 背景レイヤーを追加
     background = np.ones((height, width, 4), dtype=np.uint8) * 255
+    psd = add_psd(psd, background, "Background", enums.BlendMode.normal)
     
-    # レイヤーリストを準備
-    all_layers = []
-    
-    # 背景レイヤー
-    bg_layers = []
-    add_psd_to_group(bg_layers, background, "Background", enums.BlendMode.normal)
-    all_layers.extend(bg_layers)
-    
-    # 各色領域ごとにグループを作成
+    # 各色領域のレイヤーを追加（base -> light -> shade の順）
     for idx, (color_rgb, layers_dict) in enumerate(region_layers.items()):
-        group_name = f"Region_R{color_rgb[0]}_G{color_rgb[1]}_B{color_rgb[2]}"
-        
-        # グループ開始マーカー（フォルダ開始）
-        group_start = layers.LayerRecord(
-            channels={},
-            top=0, bottom=height, left=0, right=width,
-            blend_mode=enums.BlendMode.normal,
-            name=f"</Layer group>",
-            opacity=255,
-            flags=layers.LayerFlags(visible=True)
-        )
-        group_start.section_divider_setting = layers.SectionDividerSetting(
-            type=layers.SectionDivider.bounding_section_divider
-        )
-        all_layers.append(group_start)
-        
-        # グループ内のレイヤーを追加（下から上の順序）
-        group_layers = []
+        region_name = f"R{color_rgb[0]}_G{color_rgb[1]}_B{color_rgb[2]}"
         
         # base layer
-        add_psd_to_group(group_layers, layers_dict['base'], f"{group_name}_base", enums.BlendMode.normal)
+        psd = add_psd(psd, layers_dict['base'], f"{region_name}_base", enums.BlendMode.normal)
         
-        # light layer
-        add_psd_to_group(group_layers, layers_dict['light'], f"{group_name}_light", enums.BlendMode.normal)
+        # light layer  
+        psd = add_psd(psd, layers_dict['light'], f"{region_name}_light", enums.BlendMode.normal)
         
-        # shade layer  
-        add_psd_to_group(group_layers, layers_dict['shade'], f"{group_name}_shade", enums.BlendMode.normal)
-        
-        all_layers.extend(group_layers)
-        
-        # グループ終了マーカー（フォルダ終了）
-        group_end = layers.LayerRecord(
-            channels={},
-            top=0, bottom=height, left=0, right=width,
-            blend_mode=enums.BlendMode.normal,
-            name=group_name,
-            opacity=255,
-            flags=layers.LayerFlags(visible=True)
-        )
-        group_end.section_divider_setting = layers.SectionDividerSetting(
-            type=layers.SectionDivider.open_folder
-        )
-        all_layers.append(group_end)
+        # shade layer
+        psd = add_psd(psd, layers_dict['shade'], f"{region_name}_shade", enums.BlendMode.multiply)
     
     # 線画レイヤーを最上位に追加
-    line_layers = []
     if line_art_cv.shape[2] == 4:
         alpha = line_art_cv[:, :, 3]
         rgb_max = np.max(line_art_cv[:, :, :3])
@@ -403,16 +371,11 @@ def save_psd_with_shade_folders(base_color_cv, shade_cv, line_art_cv, region_lay
             line_art_fixed[:, :, 1] = line_intensity
             line_art_fixed[:, :, 2] = line_intensity
             line_art_fixed[:, :, 3] = alpha
-            add_psd_to_group(line_layers, line_art_fixed, "Line Art", line_blend_mode)
+            psd = add_psd(psd, line_art_fixed, "Line Art", line_blend_mode)
         else:
-            add_psd_to_group(line_layers, line_art_cv, "Line Art", line_blend_mode)
+            psd = add_psd(psd, line_art_cv, "Line Art", line_blend_mode)
     else:
-        add_psd_to_group(line_layers, line_art_cv, "Line Art", line_blend_mode)
-    
-    all_layers.extend(line_layers)
-    
-    # すべてのレイヤーをPSDに追加
-    psd.layer_and_mask_info.layer_info.layer_records = all_layers
+        psd = add_psd(psd, line_art_cv, "Line Art", line_blend_mode)
     
     # ファイル名生成
     name = randomname(10)
@@ -535,9 +498,9 @@ class RGBLineArtDividerWithShade:
                 "overlay": enums.BlendMode.overlay
             }
             
-            # PSDファイルを保存（フォルダ化）
-            print("[WithShade] Saving PSD file with folders...")
-            filename = save_psd_with_shade_folders(
+            # PSDファイルを保存（シンプルな方式）
+            print("[WithShade] Saving PSD file...")
+            filename = save_psd_with_shade(
                 base_color_cv,
                 shade_cv,
                 line_art_cv,
