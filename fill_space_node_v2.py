@@ -1,323 +1,183 @@
 """
-Fill Space Node V2 for ComfyUI (fixed)
-線画の下のピクセルを、クラスタ化された色から最も近い色で塗りつぶすノード
-- CIEDE2000色差計算を使用（オプション）
-- 線画のアンチエイリアスを拾わないよう white_mask を見直し
-- 色サンプルは original_image ではなく flat_image（線なしベタ塗り）から取得
+Fill Space Node (Nearest Color BFS version) for ComfyUI
+線画の部分を、周囲の最も近いベタ色で埋めて「線の下の色」を推定するノード。
+
+特徴:
+- 入力: binary_image（線画マスク）、flat_image（バケツ塗りベタ画像）
+- binary_image の線部分を、flat_image の周囲ピクセルの色で埋めるだけ
+- K-means / クラスタリングは一切行わない（パレットを壊さない）
+- 4近傍の multi-source BFS で最近傍の非線画ピクセルを求める（O(H*W)）
 """
 
-import torch
+import os
+from collections import deque
+
 import numpy as np
 from PIL import Image, ImageOps, ImageDraw
-from skimage import color as skcolor
+import torch
 import folder_paths
-import os
 
+# 出力パス（使わなくても良いが、一応元コードに合わせて用意）
 comfy_path = os.path.dirname(folder_paths.__file__)
-layer_divider_path = f'{comfy_path}/custom_nodes/ComfyUI-fixableflow'
+layer_divider_path = f"{comfy_path}/custom_nodes/ComfyUI-fixableflow"
 output_dir = f"{layer_divider_path}/output"
 
 if not os.path.exists(output_dir):
     os.makedirs(output_dir)
 
 
-def tensor_to_pil(tensor):
-    """ComfyUIのテンソル形式をPIL Imageに変換"""
+# ---------- 共通ユーティリティ ----------
+
+def tensor_to_pil(tensor: torch.Tensor) -> Image.Image:
+    """ComfyUIのIMAGEテンソルを PIL Image に変換"""
     image_np = tensor.cpu().detach().numpy()
-    if len(image_np.shape) == 4:
-        image_np = image_np[0]  # バッチの最初の画像を取得
+    if image_np.ndim == 4:
+        image_np = image_np[0]  # バッチ先頭だけ使う
     image_np = (image_np * 255).astype(np.uint8)
 
     if image_np.shape[2] == 3:
-        mode = 'RGB'
+        mode = "RGB"
     elif image_np.shape[2] == 4:
-        mode = 'RGBA'
+        mode = "RGBA"
     else:
-        mode = 'L'
+        mode = "L"
 
     return Image.fromarray(image_np, mode=mode)
 
 
-def pil_to_tensor(image):
-    """PIL ImageをComfyUIのテンソル形式に変換"""
+def pil_to_tensor(image: Image.Image) -> torch.Tensor:
+    """PIL Image を ComfyUIのIMAGEテンソル形式に変換"""
     image_np = np.array(image).astype(np.float32) / 255.0
     image_np = np.expand_dims(image_np, axis=0)
     return torch.from_numpy(image_np)
 
 
-def rgb_to_lab(rgb_color):
-    """RGB色をLAB色空間に変換"""
-    rgb_normalized = np.array(rgb_color).reshape(1, 1, 3) / 255.0
-    lab = skcolor.rgb2lab(rgb_normalized)
-    return lab[0, 0]
+def create_before_after_preview(original: Image.Image, processed: Image.Image) -> Image.Image:
+    """処理前後の比較画像を左右に並べて作成"""
+    width, height = original.width, original.height
+    comparison = Image.new("RGB", (width * 2, height))
+
+    comparison.paste(original.convert("RGB"), (0, 0))
+    comparison.paste(processed.convert("RGB"), (width, 0))
+
+    draw = ImageDraw.Draw(comparison)
+    # 真ん中の区切り線
+    draw.line([(width, 0), (width, height)], fill=(255, 0, 0), width=2)
+    # ラベル
+    draw.text((10, 10), "Original", fill=(255, 255, 255))
+    draw.text((width + 10, 10), "Processed", fill=(255, 255, 255))
+
+    return comparison
 
 
-def ciede2000_distance(lab1, lab2):
-    """CIEDE2000色差を計算"""
-    lab1_reshaped = np.array(lab1).reshape(1, 1, 3)
-    lab2_reshaped = np.array(lab2).reshape(1, 1, 3)
-    delta_e = skcolor.deltaE_ciede2000(lab1_reshaped, lab2_reshaped)
-    return float(delta_e[0, 0])
+# ---------- 線の下を埋める中核ロジック ----------
 
-
-def find_closest_cluster_color(pixel_color, cluster_colors):
+def fill_lines_with_nearest_color(binary_pil: Image.Image,
+                                  flat_pil: Image.Image,
+                                  invert_binary: bool = True) -> Image.Image:
     """
-    ピクセルの色に最も近いクラスタ色を見つける（未使用だが残しておく）
+    binary_pil で指定された線画部分を、flat_pil の最も近い非線画ピクセルの色で埋める。
+
+    想定する binary_pil:
+    - 通常: 線が黒(0)、それ以外が白(255)
+    - invert_binary=True の場合、内部で白黒を反転してから処理する
+
+    処理フロー:
+    1. binary を L グレースケールにして、必要なら反転
+    2. 「線ピクセル(line_mask)」と「非線ピクセル(non_line)」を二値マスクとして取得
+    3. non_line から multi-source BFS を行い、各ピクセルに「最寄り non_line 座標」を伝播
+    4. line_mask 上のピクセルは、その最寄り non_line 座標の色で埋める
     """
-    if not cluster_colors:
-        return pixel_color
-
-    pixel_lab = rgb_to_lab(pixel_color)
-
-    min_distance = float('inf')
-    closest_color = pixel_color
-
-    for cluster_id, cluster_color in cluster_colors.items():
-        cluster_lab = rgb_to_lab(cluster_color)
-        distance = ciede2000_distance(pixel_lab, cluster_lab)
-
-        if distance < min_distance:
-            min_distance = distance
-            closest_color = cluster_color
-
-    return closest_color
-
-
-def process_fill_space_with_clusters_progress(
-    binary_image,
-    original_image,
-    cluster_info,
-    invert_binary=True,
-    progress_callback=None,
-    flat_image=None,
-):
-    """
-    線画の下のピクセルをクラスタ色で塗りつぶす（K-means最適化版・逐次版）
-
-    重要な変更点:
-      - 塗りの元データは original_image ではなく flat_image を使用する
-      - white_mask は >= 250 のしきい値で決定し、線のアンチエイリアスを除外
-    """
-    from sklearn.cluster import KMeans
-
-    # バイナリ画像をグレースケールに変換
-    if binary_image.mode != 'L':
-        binary_gray = binary_image.convert('L')
+    # 1. バイナリ画像をグレースケールに変換
+    if binary_pil.mode != "L":
+        binary_gray = binary_pil.convert("L")
     else:
-        binary_gray = binary_image
+        binary_gray = binary_pil
 
-    # 必要に応じてバイナリ画像を反転
+    # 必要に応じて反転
     if invert_binary:
         binary_gray = ImageOps.invert(binary_gray)
 
-    binary_array = np.array(binary_gray)
+    mask_array = np.array(binary_gray)  # 0〜255
 
-    # ベース画像としてflat_imageを使用（なければoriginal_imageを使用）
-    if flat_image is not None:
-        base_array = np.array(flat_image.convert('RGB'))  # 線なしベタ塗り
-    else:
-        base_array = np.array(original_image.convert('RGB'))
+    # ここでは「線 = 255近辺」を line_mask とする
+    # しきい値は少し下げて、アンチエイリアスのグレーも線として扱う
+    line_mask = mask_array >= 200  # True: 線／埋める対象
+    non_line_mask = ~line_mask     # True: ベタ塗り領域（色のソース）
 
-    # クラスタ色情報を取得
-    cluster_colors = cluster_info.get('colors', {})
-    num_clusters = len(cluster_colors)
+    height, width = line_mask.shape
 
-    if num_clusters == 0:
-        if flat_image is not None:
-            return flat_image
-        return original_image
-
-    # 出力画像を初期化（flat_imageのコピー）
+    # 2. ベース画像（flat）の RGB 配列
+    base_array = np.array(flat_pil.convert("RGB"))
     output_array = base_array.copy()
 
-    # 白ピクセル（＝塗りつぶし対象）のマスク
-    # 255 一致ではなく 250 以上を採用して、アンチエイリアスされた線のグレーを除外
-    white_mask = binary_array >= 250
-    total_pixels = int(np.sum(white_mask))
+    # 全ピクセルが線の場合は何もできないので、そのまま返す
+    if not np.any(non_line_mask):
+        return flat_pil
 
-    print(f"[FillSpaceV2] Processing {total_pixels} pixels under line art")
-    print(f"[FillSpaceV2] Using {num_clusters} color clusters from Fill Area Simple")
+    # 3. multi-source BFS で最近傍 non_line の座標を埋める
+    # 最近傍の非線画ピクセルの座標を格納する配列
+    nearest_y = -np.ones((height, width), dtype=np.int32)
+    nearest_x = -np.ones((height, width), dtype=np.int32)
 
-    if total_pixels == 0:
-        return Image.fromarray(output_array.astype(np.uint8))
+    q = deque()
 
-    # 線画下のピクセル色は original ではなく base_array から取得（線なしベタ）
-    white_pixel_colors = base_array[white_mask]
+    # non_line の座標を全て BFS の起点として追加
+    ys, xs = np.where(non_line_mask)
+    for y, x in zip(ys, xs):
+        nearest_y[y, x] = y
+        nearest_x[y, x] = x
+        q.append((y, x))
 
-    # 線画下のピクセルを同じクラスタ数でK-meansクラスタリング
-    print(f"[FillSpaceV2] Clustering fill pixels into {num_clusters} clusters...")
-    unique_colors = np.unique(white_pixel_colors, axis=0)
-    n_clusters = min(num_clusters, len(unique_colors))
-    if n_clusters <= 0:
-        return Image.fromarray(output_array.astype(np.uint8))
+    # 4近傍
+    directions = [(-1, 0), (1, 0), (0, -1), (0, 1)]
 
-    kmeans = KMeans(
-        n_clusters=n_clusters,
-        random_state=42,
-        n_init=1,  # 高速化
-    )
-    line_art_labels = kmeans.fit_predict(white_pixel_colors)
-    line_art_centers = kmeans.cluster_centers_
+    # BFS: 各ピクセルに「一番近い non_line の座標」を伝播させる
+    while q:
+        cy, cx = q.popleft()
+        ny0, nx0 = nearest_y[cy, cx], nearest_x[cy, cx]
 
-    print(f"[FillSpaceV2] Created {len(line_art_centers)} line-art-side clusters")
+        for dy, dx in directions:
+            ny, nx = cy + dy, cx + dx
+            if 0 <= ny < height and 0 <= nx < width:
+                # まだ最近傍が決まっていないピクセルにのみ伝播
+                if nearest_y[ny, nx] == -1:
+                    nearest_y[ny, nx] = ny0
+                    nearest_x[ny, nx] = nx0
+                    q.append((ny, nx))
 
-    # Fill Areaのクラスタ色を配列に変換
-    fill_cluster_ids = list(cluster_colors.keys())
-    fill_cluster_array = np.array([cluster_colors[cid] for cid in fill_cluster_ids])
+    # 4. line_mask 上のピクセルを最近傍 non_line の色で埋める
+    line_ys, line_xs = np.where(line_mask)
+    src_ys = nearest_y[line_ys, line_xs]
+    src_xs = nearest_x[line_ys, line_xs]
 
-    # クラスタ間のマッピングを計算（クラスタ中心同士の比較：RGB距離）
-    print(
-        f"[FillSpaceV2] Computing cluster mappings "
-        f"({len(line_art_centers)} x {len(fill_cluster_array)} comparisons)..."
-    )
-    cluster_mapping = np.zeros(len(line_art_centers), dtype=np.int32)
+    # 念のため valid な位置だけ使う
+    valid = (src_ys >= 0) & (src_xs >= 0)
+    line_ys = line_ys[valid]
+    line_xs = line_xs[valid]
+    src_ys = src_ys[valid]
+    src_xs = src_xs[valid]
 
-    for i, center in enumerate(line_art_centers):
-        distances = np.sum((fill_cluster_array - center) ** 2, axis=1)
-        cluster_mapping[i] = int(np.argmin(distances))
-
-    print(f"[FillSpaceV2] Applying mapped colors to pixels...")
-
-    # 各ピクセルに対してマッピングされた色を適用
-    for pixel_idx in range(len(white_pixel_colors)):
-        line_cluster_id = line_art_labels[pixel_idx]
-        fill_cluster_idx = cluster_mapping[line_cluster_id]
-        mapped_color = fill_cluster_array[fill_cluster_idx]
-        white_pixel_colors[pixel_idx] = mapped_color
-
-        if progress_callback is not None and pixel_idx % 10000 == 0:
-            progress_callback(pixel_idx, len(white_pixel_colors))
-
-    # 結果を出力画像に反映
-    output_array[white_mask] = white_pixel_colors
-
-    print(f"[FillSpaceV2] Completed processing")
+    output_array[line_ys, line_xs] = base_array[src_ys, src_xs]
 
     return Image.fromarray(output_array.astype(np.uint8))
 
 
-def find_closest_cluster_color_optimized(pixel_color, cluster_colors, cluster_labs):
+# ---------- ComfyUI ノード本体 ----------
+
+class FillSpaceNearestNode:
     """
-    最適化版：事前計算されたLAB値を使用してピクセルの色に最も近いクラスタ色を見つける
-    （今回の修正版では未使用だが、将来用に残しておく）
-    """
-    if not cluster_colors:
-        return pixel_color
+    線画の下のピクセルを周囲の最も近いベタ色で埋めるノード（最近傍 BFS 版）
 
-    pixel_lab = rgb_to_lab(pixel_color)
+    使い方:
+        binary_image : 線画マスク（通常は「線=黒, それ以外=白」の画像）
+        flat_image   : 線なしバケツ塗り画像（ベタ塗り）
+        invert_binary: True の場合、binary_image を先に反転してから処理
+                       （線=白, それ以外=黒 の形式で扱いたい場合用）
 
-    min_distance = float('inf')
-    closest_color = pixel_color
-
-    for cluster_id, cluster_lab in cluster_labs.items():
-        distance = ciede2000_distance(pixel_lab, cluster_lab)
-
-        if distance < min_distance:
-            min_distance = distance
-            closest_color = cluster_colors[cluster_id]
-
-    return closest_color
-
-
-def process_fill_space_batch_optimized(
-    binary_image,
-    original_image,
-    cluster_info,
-    invert_binary=True,
-    flat_image=None,
-):
-    """
-    バッチ処理最適化版：K-meansでクラスタ間マッピング（超高速版）
-
-    重要な変更点:
-      - 塗り情報のソースは original_image ではなく flat_image
-      - white_mask は >= 250 で決定して線のアンチエイリアスを除外
-    """
-    from sklearn.cluster import KMeans
-
-    # バイナリ画像をグレースケールに変換
-    if binary_image.mode != 'L':
-        binary_gray = binary_image.convert('L')
-    else:
-        binary_gray = binary_image
-
-    if invert_binary:
-        binary_gray = ImageOps.invert(binary_gray)
-
-    binary_array = np.array(binary_gray)
-
-    # ベース画像としてflat_imageを使用（なければoriginal_imageを使用）
-    if flat_image is not None:
-        base_array = np.array(flat_image.convert('RGB'))
-    else:
-        base_array = np.array(original_image.convert('RGB'))
-
-    # クラスタ色情報
-    cluster_colors = cluster_info.get('colors', {})
-    num_clusters = len(cluster_colors)
-
-    if num_clusters == 0:
-        if flat_image is not None:
-            return flat_image
-        return original_image
-
-    output_array = base_array.copy()
-
-    # 塗り対象のマスク
-    white_mask = binary_array >= 250
-    total_pixels = int(np.sum(white_mask))
-
-    print(f"[FillSpaceV2] Batch processing {total_pixels} pixels")
-    print(f"[FillSpaceV2] Using {num_clusters} color clusters")
-
-    if total_pixels == 0:
-        return Image.fromarray(output_array.astype(np.uint8))
-
-    # 塗り対象ピクセルの色（線なしベタ）を取得
-    white_pixel_colors = base_array[white_mask]
-
-    # K-meansでクラスタリング
-    print(f"[FillSpaceV2] K-means clustering into {num_clusters} clusters...")
-    unique_colors = np.unique(white_pixel_colors, axis=0)
-    n_clusters = min(num_clusters, len(unique_colors))
-    if n_clusters <= 0:
-        return Image.fromarray(output_array.astype(np.uint8))
-
-    kmeans = KMeans(n_clusters=n_clusters, random_state=42, n_init=1)
-    line_art_labels = kmeans.fit_predict(white_pixel_colors)
-    line_art_centers = kmeans.cluster_centers_
-
-    # Fill Areaクラスタ色を配列に変換
-    cluster_ids = list(cluster_colors.keys())
-    cluster_rgb_array = np.array([cluster_colors[cid] for cid in cluster_ids])
-
-    # クラスタ中心間のマッピング（ベクトル化）
-    print(f"[FillSpaceV2] Computing optimal cluster mapping...")
-    distances = np.sum(
-        (line_art_centers[:, np.newaxis, :] - cluster_rgb_array[np.newaxis, :, :]) ** 2,
-        axis=2,
-    )
-    cluster_mapping = np.argmin(distances, axis=1)
-
-    # マッピングされた色を一括適用
-    mapped_colors = cluster_rgb_array[cluster_mapping]
-    result_colors = mapped_colors[line_art_labels]
-
-    output_array[white_mask] = result_colors
-
-    print(f"[FillSpaceV2] Batch processing completed")
-
-    return Image.fromarray(output_array.astype(np.uint8))
-
-
-class FillSpaceV2Node:
-    """
-    線画の下のピクセルをクラスタ色で塗りつぶすノード（修正版）
-
-    - binary_image: 線画 or マスク
-    - flat_image: バケツ塗りされたベース画像（線なしベタ）
-    - original_image: 参考用の元画像（現在は色の取得には使用しない）
-    - cluster_info: Fill Area Simple からのクラスタ情報
+    出力:
+        filled_image : 線がベタ色で埋められた画像（RGB）
+        preview      : flat_image と filled_image を横に並べた比較画像
     """
 
     def __init__(self):
@@ -327,18 +187,15 @@ class FillSpaceV2Node:
     def INPUT_TYPES(cls):
         return {
             "required": {
-                "binary_image": ("IMAGE",),   # 線画（1枚目）
-                "flat_image": ("IMAGE",),     # バケツ塗りされた画像（2枚目）
-                "original_image": ("IMAGE",), # 元の塗り画像（3枚目）
-                "cluster_info": ("CLUSTER_INFO",),
-                "invert_binary": ("BOOLEAN", {
-                    "default": True,
-                    "display_label": "Invert Binary Image"
-                }),
-                "use_batch_processing": ("BOOLEAN", {
-                    "default": False,
-                    "display_label": "Use Batch Processing (Faster)"
-                }),
+                "binary_image": ("IMAGE",),  # 線画マスク
+                "flat_image": ("IMAGE",),    # バケツ塗りベタ画像
+                "invert_binary": (
+                    "BOOLEAN",
+                    {
+                        "default": True,
+                        "display_label": "Invert Binary Image",
+                    },
+                ),
             }
         }
 
@@ -348,77 +205,33 @@ class FillSpaceV2Node:
     FUNCTION = "execute"
     CATEGORY = "LayerDivider"
 
-    def execute(
-        self,
-        binary_image,
-        flat_image,
-        original_image,
-        cluster_info,
-        invert_binary=True,
-        use_batch_processing=False,
-    ):
-        """
-        線画の下のピクセルをクラスタ色で塗りつぶす処理
-        """
-
+    def execute(self, binary_image, flat_image, invert_binary=True):
         # テンソル → PIL
         binary_pil = tensor_to_pil(binary_image)
         flat_pil = tensor_to_pil(flat_image)
-        original_pil = tensor_to_pil(original_image)
 
-        if use_batch_processing:
-            print("[FillSpaceV2] Using batch processing mode")
-            filled_image = process_fill_space_batch_optimized(
-                binary_pil,
-                original_pil,
-                cluster_info,
-                invert_binary,
-                flat_pil,  # ベースは常に flat_image
-            )
-        else:
-            print("[FillSpaceV2] Using standard processing mode")
-            filled_image = process_fill_space_with_clusters_progress(
-                binary_pil,
-                original_pil,
-                cluster_info,
-                invert_binary,
-                None,
-                flat_pil,  # ベースは常に flat_image
-            )
+        # 線の下を最近傍色で埋める
+        filled_pil = fill_lines_with_nearest_color(
+            binary_pil,
+            flat_pil,
+            invert_binary=invert_binary,
+        )
 
-        # プレビュー画像（前後比較）
-        preview = create_before_after_preview(flat_pil, filled_image)
+        # プレビュー作成
+        preview_pil = create_before_after_preview(flat_pil, filled_pil)
 
         # PIL → テンソル
-        output_tensor = pil_to_tensor(filled_image)
-        preview_tensor = pil_to_tensor(preview)
+        filled_tensor = pil_to_tensor(filled_pil)
+        preview_tensor = pil_to_tensor(preview_pil)
 
-        return (output_tensor, preview_tensor)
-
-
-def create_before_after_preview(original, processed):
-    """処理前後の比較画像を作成"""
-    width = original.width
-    height = original.height
-
-    comparison = Image.new('RGB', (width * 2, height))
-    comparison.paste(original.convert('RGB'), (0, 0))
-    comparison.paste(processed.convert('RGB'), (width, 0))
-
-    draw = ImageDraw.Draw(comparison)
-    draw.line([(width, 0), (width, height)], fill=(255, 0, 0), width=2)
-
-    draw.text((10, 10), "Original", fill=(255, 255, 255))
-    draw.text((width + 10, 10), "Processed", fill=(255, 255, 255))
-
-    return comparison
+        return (filled_tensor, preview_tensor)
 
 
 # ノードクラスのマッピング
 NODE_CLASS_MAPPINGS = {
-    "FillSpaceV2": FillSpaceV2Node,
+    "FillSpaceNearest": FillSpaceNearestNode,
 }
 
 NODE_DISPLAY_NAME_MAPPINGS = {
-    "FillSpaceV2": "Fill Space V2 (Cluster-based, Fixed)",
+    "FillSpaceNearest": "Fill Space (Nearest Color BFS)",
 }
