@@ -6,8 +6,6 @@ Overlay Images Node
 import torch
 import numpy as np
 from PIL import Image
-import os
-import folder_paths
 
 
 class OverlayImagesNode:
@@ -33,6 +31,7 @@ class OverlayImagesNode:
     def overlay_images(self, input1, input2):
         """
         2つの画像を重ね合わせる
+        input2をinput1の上に重ねる（input2が優先される）
         
         Args:
             input1: 背景画像 (ComfyUI形式: torch.Tensor [B, H, W, C])
@@ -41,42 +40,36 @@ class OverlayImagesNode:
         Returns:
             重ね合わせた画像 (ComfyUI形式)
         """
-        # ComfyUI形式のテンソルをNumPy配列に変換
-        # ComfyUIの画像は [B, H, W, C] の形式で、値は0-1の範囲
-        img1_np = (input1[0].cpu().numpy() * 255).astype(np.uint8)
-        img2_np = (input2[0].cpu().numpy() * 255).astype(np.uint8)
+        # バッチの最初の画像を取得
+        img1 = input1[0].clone()
+        img2 = input2[0].clone()
         
-        # NumPy配列をPIL Imageに変換
-        img1_pil = Image.fromarray(img1_np, mode='RGB')
-        img2_pil = Image.fromarray(img2_np, mode='RGB')
+        # サイズを揃える（input1のサイズに合わせる）
+        if img1.shape[:2] != img2.shape[:2]:
+            # テンソルをNumPy配列に変換
+            img2_np = (img2.cpu().numpy() * 255).astype(np.uint8)
+            img2_pil = Image.fromarray(img2_np)
+            
+            # リサイズ (height, width)
+            target_size = (img1.shape[1], img1.shape[0])  # (width, height) for PIL
+            img2_pil = img2_pil.resize(target_size, Image.LANCZOS)
+            
+            # テンソルに戻す
+            img2 = torch.from_numpy(np.array(img2_pil).astype(np.float32) / 255.0)
         
-        # 画像サイズを揃える（input1のサイズに合わせる）
-        if img1_pil.size != img2_pil.size:
-            img2_pil = img2_pil.resize(img1_pil.size, Image.Resampling.LANCZOS)
+        # input2の黒以外の部分をマスクとして使用
+        # 黒 (0,0,0) 以外のピクセルをinput2から採用
+        # グレースケール変換して閾値判定
+        gray = img2.mean(dim=2, keepdim=True)
+        mask = (gray > 0.01).float()  # 黒に近い部分は背景を使う
         
-        # input2にアルファチャンネルがない場合は追加
-        # RGBをRGBAに変換（完全不透明）
-        if img2_pil.mode == 'RGB':
-            img2_pil = img2_pil.convert('RGBA')
+        # マスクを使って合成
+        result = img1 * (1 - mask) + img2 * mask
         
-        # input1もRGBAに変換
-        if img1_pil.mode == 'RGB':
-            img1_pil = img1_pil.convert('RGBA')
+        # バッチ次元を追加
+        result = result.unsqueeze(0)
         
-        # 画像を重ね合わせる
-        # alpha_compositeはimg1の上にimg2を重ねる
-        result_pil = Image.alpha_composite(img1_pil, img2_pil)
-        
-        # RGBに戻す（PNGでもRGBとして出力）
-        result_pil = result_pil.convert('RGB')
-        
-        # PIL ImageをNumPy配列に変換
-        result_np = np.array(result_pil).astype(np.float32) / 255.0
-        
-        # ComfyUI形式のテンソルに変換 [B, H, W, C]
-        result_tensor = torch.from_numpy(result_np)[None,]
-        
-        return (result_tensor,)
+        return (result,)
 
 
 # ノードマッピング
