@@ -124,7 +124,7 @@ ComfyUI Managerを開き、「Install Missing Custom Nodes」を選択します�
 
 <img width="1232" height="579" alt="スクリーンショット 2025-12-21 13 12 21" src="https://github.com/user-attachments/assets/69d76614-4d82-447c-ab65-1f35f9e86bcd" />
 
-
+</details>
 
 ## 今後の予定
 FixableFlowでは以下の工程全てに対応する事を目標としています。
