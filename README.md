@@ -1,5 +1,68 @@
-[EN](README.md) | [中文](README_ZH_CN.md)
-# ComfyUI LayerDivider
+[JP](README.md) | [EN](README_EN.md)
+# ComfyUI FixableFlow
+
+
+
+## 環境構築
+
+左上のハンバーガーボタンをクリックしてサイドメニューを開き、Templatesを選択します。
+<img width="1049" height="608" alt="スクリーンショット 2025-12-21 11 04 30" src="https://github.com/user-attachments/assets/eacfe7e1-fdd9-45a6-904a-de3d99c876b7" />
+
+Templatesの中からComfyUIを選択し、RTX5090をレンタルしてインスタンスを起動します。
+（5090でなくても構いませんが、VRAM32GB以上を推奨します）
+また、コンテナのVolumeサイズは100GB程度確保していくことを推奨します。
+<img width="1293" height="479" alt="スクリーンショット 2025-12-21 11 19 17" src="https://github.com/user-attachments/assets/c820fc5c-ffc2-4b54-afd4-76e8e374a9f1" />
+<img width="1177" height="443" alt="スクリーンショット 2025-12-21 11 25 16" src="https://github.com/user-attachments/assets/3f01970a-4a0b-4ecc-a5c9-ef951c72938b" />
+
+インスタンスが起動すると「Open」ボタンが表示されるので、ボタンを押してインスタン内部に入ります。
+<img width="905" height="233" alt="スクリーンショット 2025-12-21 11 27 11" src="https://github.com/user-attachments/assets/019d38f5-d2d0-489a-b99e-a54015133ffc" />
+
+インスタンス内部に入ると以下のような画面が表示されるので、まずはJupyter Terminalを開きます。
+<img width="1285" height="719" alt="スクリーンショット 2025-12-21 11 39 59" src="https://github.com/user-attachments/assets/d133ea9f-92f0-4601-bf03-6b8ee6e7f217" />
+
+Terminalを開いたら、以下のコマンドを入力します。
+
+```bash
+cd /workspace/ComfyUI/custom_nodes/
+git clone https://github.com/mattyamonaca/ComfyUI-fixableflow.git
+cd /workspace/ComfyUI/custom_nodes/ComfyUI-fixableflow
+
+pip install -r requirements.txt
+
+pip install cython
+pip install pytoshop -I --no-cache-dir
+pip install psd-tools
+
+cd /workspace/ComfyUI/models/checkpoints/
+wget https://huggingface.co/cagliostrolab/animagine-xl-3.1/resolve/main/animagine-xl-3.1.safetensors
+
+cd /workspace/ComfyUI/models/loras/
+wget https://huggingface.co/2vXpSwA7/iroiro-lora/resolve/main/sdxl/sdxl-lineart_05.safetensors
+wget https://huggingface.co/2vXpSwA7/iroiro-lora/resolve/main/sdxl/sdxl-flat.safetensors
+wget https://huggingface.co/tori29umai/FramePack_LoRA/resolve/main/image2flat_V1_1024_dim4-000040.safetensors
+
+cd /workspace/ComfyUI/models/controlnet
+wget https://huggingface.co/kataragi/ControlNet-LineartXL/resolve/main/Katarag_lineartXL-fp16.safetensors
+
+cd /workspace/ComfyUI/models/vae
+wget https://huggingface.co/stabilityai/sdxl-vae/resolve/main/sdxl_vae.safetensors
+wget https://huggingface.co/hunyuanvideo-community/HunyuanVideo/resolve/main/vae/diffusion_pytorch_model.safetensors
+
+cd /workspace/ComfyUI/models/clip
+wget https://huggingface.co/maybleMyers/framepack_h1111/resolve/main/clip_l.safetensors
+wget https://huggingface.co/maybleMyers/framepack_h1111/resolve/main/llava_llama3_fp16.safetensors
+
+cd /workspace/ComfyUI/models/diffusion_models
+wget https://huggingface.co/maybleMyers/framepack_h1111/resolve/main/FramePackI2V_HY_bf16.safetensors
+
+cd /workspace/ComfyUI/models/lora
+wget https://huggingface.co/mattyamonaca/framepack-shade-adder_lora/resolve/main/shade-adder-lora.safetensors
+```
+
+
+
+
+
 **ComfyUI LayerDivider** is custom nodes that generating layered psd files inside ComfyUI, original implement is [mattyamonaca/layerdivider](https://github.com/mattyamonaca/layerdivider)
 
 ![image1](docs/layerdivider-color-base.png)
