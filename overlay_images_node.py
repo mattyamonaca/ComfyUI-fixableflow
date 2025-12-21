@@ -26,7 +26,7 @@ class OverlayImagesNode:
     RETURN_TYPES = ("IMAGE",)
     RETURN_NAMES = ("output",)
     FUNCTION = "overlay_images"
-    CATEGORY = "image/composite"
+    CATEGORY = "FixableFlow"
     
     def overlay_images(self, input1, input2):
         """
