@@ -10,8 +10,8 @@ import folder_paths
 import os
 
 comfy_path = os.path.dirname(folder_paths.__file__)
-layer_divider_path = f'{comfy_path}/custom_nodes/ComfyUI-LayerDivider'
-output_dir = f"{layer_divider_path}/output"
+fixableflow_path = f'{comfy_path}/custom_nodes/ComfyUI-FixableFlow'
+output_dir = f"{fixableflow_path}/output"
 
 if not os.path.exists(output_dir):
     os.makedirs(output_dir)
@@ -137,7 +137,7 @@ class ExtractLineArtNode:
     
     FUNCTION = "execute"
     
-    CATEGORY = "LayerDivider"
+    CATEGORY = "FixableFlow"
     
     def execute(self, image, white_threshold=200, apply_smoothing=True, invert_alpha=False):
         """
@@ -252,7 +252,7 @@ class ExtractLineArtAdvancedNode:
     
     FUNCTION = "execute"
     
-    CATEGORY = "LayerDivider"
+    CATEGORY = "FixableFlow"
     
     def execute(self, image, white_threshold=200, apply_smoothing=True, 
                 preserve_colors=False, line_darkness=1.0, edge_detection=False):
@@ -364,11 +364,11 @@ def create_preview_with_checkerboard(rgba_image, tile_size=10):
 
 # ノードクラスのマッピングを更新
 NODE_CLASS_MAPPINGS = {
-    "LayerDivider - Extract Line Art": ExtractLineArtNode,
-    "LayerDivider - Extract Line Art Advanced": ExtractLineArtAdvancedNode,
+    "Extract Line Art": ExtractLineArtNode,
+    "Extract Line Art Advanced": ExtractLineArtAdvancedNode,
 }
 
 NODE_DISPLAY_NAME_MAPPINGS = {
-    "LayerDivider - Extract Line Art": "Extract Line Art",
-    "LayerDivider - Extract Line Art Advanced": "Extract Line Art (Advanced)",
+    "Extract Line Art": "Extract Line Art",
+    "Extract Line Art Advanced": "Extract Line Art (Advanced)",
 }

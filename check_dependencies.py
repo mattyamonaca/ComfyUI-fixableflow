@@ -55,18 +55,6 @@ print(f"\n3. Node Module Import Test:")
 import os
 os.chdir(Path(__file__).parent)
 
-try:
-    from rgb_line_art_divider import RGB_NODE_CLASS_MAPPINGS
-    print(f"   ✓ rgb_line_art_divider: OK ({len(RGB_NODE_CLASS_MAPPINGS)} nodes)")
-except Exception as e:
-    print(f"   ✗ rgb_line_art_divider: FAILED - {e}")
-
-try:
-    from layer_divider_simplified import NODE_CLASS_MAPPINGS
-    print(f"   ✓ layer_divider_simplified: OK ({len(NODE_CLASS_MAPPINGS)} nodes)")
-except Exception as e:
-    print(f"   ✗ layer_divider_simplified: FAILED - {e}")
-
 # Installation commands
 if missing_packages:
     print("\n" + "=" * 70)
