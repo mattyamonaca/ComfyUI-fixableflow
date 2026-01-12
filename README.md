@@ -118,6 +118,7 @@ wget https://huggingface.co/maybleMyers/framepack_h1111/resolve/main/FramePackI2
 
 cd /workspace/ComfyUI/models/loras
 wget https://huggingface.co/mattyamonaca/framepack-shade-adder_lora/resolve/main/shade-adder-lora.safetensors
+wget https://huggingface.co/mattyamonaca/fixableflow/resolve/main/fpack_highlight_lora.safetensors?download=true
 ```
 
 全ての処理が終わったら、再びインスタンス内部に入った時に表示された最初の画面を開き、ComfyUIを開きます。
