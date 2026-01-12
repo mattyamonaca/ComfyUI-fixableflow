@@ -17,6 +17,13 @@ v0.1では①~③及び⑤の工程に対応しており、順次④、⑥の工
 
 <img width="933" height="579" alt="スクリーンショット 2025-12-21 17 54 02" src="https://github.com/user-attachments/assets/ffb2b773-8653-48e7-aa34-e1ba95bc9b98" />
 
+
+## v0.1.1
+ハイライト付与に対応しました。
+以下のワークフローからハイライト付与版を実行可能です。
+
+![ハイライト対応版Workflow](https://github.com/mattyamonaca/ComfyUI-fixableflow/blob/main/workflows/fixable-workflow-comfyui-highlight.json)
+
 ## 使用しているモデル
 v0.1におけるワークフローでは、
 
